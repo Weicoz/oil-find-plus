@@ -90,7 +90,7 @@ extension IndexStore {
             let root = String(decoding: p[pos..<(pos+rootLen)], as: UTF8.self); pos += rootLen
             let homeIndex = u32(104), deletedCount = u32(108)
             let caseSensitiveNames = p[112] == 1
-            let s = IndexStore(rootPath: root, count: count, namesLen: namesLen, altCount: altCount, altLen: altLen, fingerprint: u64(48), homeIndex: homeIndex, finishedAt: u64(56), caseSensitiveNames: caseSensitiveNames)
+            let s = IndexStore(rootPath: root, count: count, namesLen: namesLen, altCount: altCount, altLen: altLen, fingerprint: u64(48), homeIndex: homeIndex, finishedAt: u64(56), caseSensitiveNames: caseSensitiveNames, reserveExtra: false)
             func copy(_ dst: UnsafeMutableRawPointer, _ n: Int) { if n > 0 { memcpy(dst, p.baseAddress!.advanced(by: pos), n) }; pos += n }
             copy(s.nameOff, (count+1)*4); copy(s.parent, count*4); copy(s.sizeC, count*4); copy(s.mtime, count*4)
             copy(s.flags, count); copy(s.depth, count); copy(s.kind, count); copy(s.names, namesLen)

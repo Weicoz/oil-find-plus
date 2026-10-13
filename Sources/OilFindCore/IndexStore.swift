@@ -28,10 +28,14 @@ public final class IndexStore {
         let ptr = malloc(max(1, count) * MemoryLayout<T>.stride)!
         return ptr.bindMemory(to: T.self, capacity: max(1, count))
     }
-    init(rootPath: String, count: Int, namesLen: Int, altCount: Int, altLen: Int, fingerprint: UInt64, homeIndex: UInt32, finishedAt: UInt64, caseSensitiveNames: Bool = false) {
+    init(rootPath: String, count: Int, namesLen: Int, altCount: Int, altLen: Int, fingerprint: UInt64, homeIndex: UInt32, finishedAt: UInt64, caseSensitiveNames: Bool = false, reserveExtra: Bool = true) {
         self.rootPath = rootPath; self.count = count; self.namesLen = namesLen; self.altCount = altCount; self.altLen = altLen
-        self.capacity = count + count / 4; self.namesCapacity = namesLen + namesLen / 4
-        self.altCapacity = altCount + altCount / 4; self.altNamesCapacity = altLen + altLen / 4
+        let extra = reserveExtra ? min(count / 16, 16384) : 0
+        let namesExtra = reserveExtra ? min(namesLen / 16, 65536) : 0
+        let altExtra = reserveExtra ? min(altCount / 16, 16384) : 0
+        let altNamesExtra = reserveExtra ? min(altLen / 16, 65536) : 0
+        self.capacity = count + extra; self.namesCapacity = namesLen + namesExtra
+        self.altCapacity = altCount + altExtra; self.altNamesCapacity = altLen + altNamesExtra
         self.configFingerprint = fingerprint; self.homeIndex = homeIndex; self.scanFinishedAt = finishedAt; self.liveCount = count
         self.caseSensitiveNames = caseSensitiveNames
         nameOff = Self.alloc(UInt32.self, capacity + 1); parent = Self.alloc(UInt32.self, capacity)
