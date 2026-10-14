@@ -45,13 +45,14 @@ pnpm test
 pnpm build
 ```
 
-## 约定
+## 上游同步与合并原则
 
-- 应用使用 Swift 5 语言模式与一个 C target，只用系统框架，不引入第三方包。
-- 公开应用库与核心不得依赖私有模块，只通过中性的 `ApplicationExtension` 接入。仅 `Package.swift` 和 `Sources/OilFind/main.swift` 可提及私有 target，分别用于条件构建与组装；入口不解析私有功能状态或参数。扩展提供启动、退出、设置分区、URL、语言接口，DEBUG 下可预处理并移除自身参数。
-- 扫描、搜索、事件处理热路径使用 Unsafe 指针和 SoA 布局，不创建 String，不逐项堆分配。
-- 代码注释用英文。修改界面文案时维护 `L10n.swift` 中的中英文对应项。
-- 索引文件只保留一份，临时文件用完即删。没有完全磁盘访问权限时静默跳过 EPERM 目录。
-- 界面验证使用调试版 `--snapshot`；正式版不包含该入口。
-- 官网使用 TypeScript、React 和 Next.js，运行时依赖为 `next`、`react`、`react-dom`、`@vercel/analytics`、`stripe`（授权接口用）；npm 与 pnpm 锁文件保持一致。
-- 不提交环境文件、密钥、下载包、索引或构建产物。CI 通过 `CI=true` 跳过时间敏感或依赖本机真实索引的测试，本地照常运行。
+1. **独立演进**：
+   - 官方上游（`https://github.com/oil-oil/oil-find.git`）仅作为只读参考源与新功能跟踪源；本仓库（`https://github.com/Weicoz/oil-find-plus.git`）独立演进并已内置开源 Pro 全功能。
+   - 应用更新完全对接自建仓库（`updates/latest.json`），不与官方上游服务通信。
+2. **合并决策规范（策略优劣对比）**：
+   - 跟踪上游变动时通过 `git fetch upstream` 审查其提交；
+   - 严禁盲目整体合入官方代码。合并前必须严格对比**自研策略与官方策略**：
+     - **能效与稳定性优先**：自研已实现的能效小核后台调度（`qos: .background` + 80ms 动态休眠）、FTS5 批事务控制（防 SQLite 暴增）及防闪屏死循环切断机制，必须坚决保留，不得被官方策略降级覆盖。
+     - **全盘内容检索优先**：自研全盘智能降噪与内容检索策略优先于官方有限范围或付费限制逻辑。
+     - 仅在确认上游变动不冲突或确有更优算法改进时，方可按最小改动合入。

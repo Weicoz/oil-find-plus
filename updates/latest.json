@@ -1,0 +1,27 @@
+{
+  "version": "1.6.2",
+  "build": 14,
+  "url": "https://github.com/Weicoz/oil-find-plus/releases/download/v1.6.2-plus/OilFind-Plus-v1.6.2-plus-macOS-arm64.zip",
+  "size": 1711714,
+  "sha256": "90ad006409dda800425ad4565f72fd451de3a2ac2f47cd2d661905485be3a323",
+  "minimumSystemVersion": "14.0",
+  "published": "2026-10-14",
+  "notes": {
+    "zh": [
+      "集成 Pro 全功能开源（PDF/Word/RTF/Markdown 等全文内容检索）",
+      "集成 Apple Vision 图像 OCR 离线文字秒级检索",
+      "全盘扫描支持与机器资产/构建缓存智能降噪",
+      "能效核心（E-Cores）低能耗调度与 80ms 动态休眠，彻底消除发热",
+      "FTS5 SQLite 批量事务提交，杜绝数据库与 WAL 体积膨胀",
+      "修复索引变动引发的界面列表闪烁"
+    ],
+    "en": [
+      "Fully integrated Pro features open source (full-text search for PDF, Word, RTF, Markdown, etc.)",
+      "Apple Vision offline image OCR text retrieval",
+      "Full-disk coverage with smart exclusions for machine assets and build caches",
+      "Energy-efficient scheduling on E-cores with 80ms sleep to eliminate heating",
+      "SQLite FTS5 batch transaction commits to prevent disk bloating",
+      "Anti-flicker debouncing for live index updates"
+    ]
+  }
+}

@@ -113,12 +113,15 @@ public struct SystemUpdateFiles: UpdateFileOperations {
         guard !entries.isEmpty, entries.allSatisfy({ entry in
             let parts = entry.split(separator: "/", omittingEmptySubsequences: false)
             return !entry.hasPrefix("/") && !parts.contains("..") && !entry.contains("\\")
-                && (parts.first == "Oil Find.app" || parts.first == "__MACOSX")
+                && (parts.first == "Oil Find Plus.app" || parts.first == "Oil Find.app" || parts.first == "__MACOSX")
         }), !((try process("/usr/bin/zipinfo", ["-l", archive.path])).split(separator: "\n").contains { $0.first == "l" }) else { throw UpdateFailure.integrity }
         let extraction = workspace.appendingPathComponent("unpacked", isDirectory: true)
         try fm.createDirectory(at: extraction, withIntermediateDirectories: false)
         _ = try process("/usr/bin/ditto", ["-x", "-k", archive.path, extraction.path])
-        let app = extraction.appendingPathComponent("Oil Find.app", isDirectory: true)
+        var app = extraction.appendingPathComponent("Oil Find Plus.app", isDirectory: true)
+        if !fm.fileExists(atPath: app.path) {
+            app = extraction.appendingPathComponent("Oil Find.app", isDirectory: true)
+        }
         guard fm.fileExists(atPath: app.path), (try? app.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == false else { throw UpdateFailure.integrity }
         return app
     }

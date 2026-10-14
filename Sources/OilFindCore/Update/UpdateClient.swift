@@ -1,7 +1,7 @@
 import Foundation
 
 public final class UpdateClient {
-    public static let latestURL = URL(string: "https://find.oiloil.org/updates/latest.json")!
+    public static let latestURL = URL(string: "https://raw.githubusercontent.com/Weicoz/oil-find-plus/main/updates/latest.json")!
     private let manifestURL: URL
     private let version: String
     private let allowLocalhost: Bool
@@ -14,19 +14,33 @@ public final class UpdateClient {
         config.urlCredentialStorage = nil; config.urlCache = nil
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
         config.timeoutIntervalForRequest = 30; config.timeoutIntervalForResource = 600
-        config.httpAdditionalHeaders = ["User-Agent": "OilFind/" + version, "Accept-Language": ""]
+        config.httpAdditionalHeaders = ["User-Agent": "OilFindPlus/" + version, "Accept-Language": ""]
         return config
     }
     public func check() async throws -> UpdateManifest {
         guard UpdateManifest.validURL(manifestURL, allowLocalhost: allowLocalhost) else { throw UpdateFailure.other }
-        let session = URLSession(configuration: configuration(), delegate: UpdateNoRedirect(), delegateQueue: nil)
+        let session = URLSession(configuration: configuration(), delegate: UpdateFollowRedirect(), delegateQueue: nil)
         defer { session.invalidateAndCancel() }
         let data: Data, response: URLResponse
         do { (data, response) = try await session.data(from: manifestURL) }
         catch { throw UpdateFailure.network }
         guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw UpdateFailure.network }
         let manifest = try UpdateManifest.parse(data, allowLocalhost: allowLocalhost)
-        guard manifest.url.host == manifestURL.host else { throw UpdateFailure.other }
+        let allowedHosts: Set<String> = [
+            manifestURL.host ?? "",
+            "github.com",
+            "api.github.com",
+            "raw.githubusercontent.com",
+            "objects.githubusercontent.com",
+            "github-releases.githubusercontent.com"
+        ]
+        if let host = manifest.url.host {
+            guard allowedHosts.contains(host) || host.hasSuffix(".githubusercontent.com") || host == manifestURL.host else {
+                throw UpdateFailure.other
+            }
+        } else {
+            throw UpdateFailure.other
+        }
         return manifest
     }
     // The returned directory belongs to the caller and must be removed after use.
@@ -40,13 +54,17 @@ public final class UpdateClient {
     }
 }
 
-private class UpdateNoRedirect: NSObject, URLSessionTaskDelegate {
+private class UpdateFollowRedirect: NSObject, URLSessionTaskDelegate {
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
-        completionHandler(nil)
+        if let url = request.url, url.scheme == "https" {
+            completionHandler(request)
+        } else {
+            completionHandler(nil)
+        }
     }
 }
 
-private final class UpdateDownload: UpdateNoRedirect, URLSessionDownloadDelegate {
+private final class UpdateDownload: UpdateFollowRedirect, URLSessionDownloadDelegate {
     private let size: Int64
     private let progress: (Double) -> Void
     private var completion: ((Result<URL, Error>) -> Void)?
