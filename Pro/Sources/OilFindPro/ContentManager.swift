@@ -23,7 +23,7 @@ public final class ContentManager {
     private let documentExtractor = DocumentExtractor()
     private let imageRecognizer = ImageRecognizer()
 
-    private let lock = NSLock()
+    private let lock = NSRecursiveLock()
     private let searchLock = NSLock()
     private var isIndexing = false
     private var isBackgroundBusy = false
@@ -38,14 +38,18 @@ public final class ContentManager {
     private var inTransaction = false
     private var uncommittedCount = 0
 
+    private var isOcrEnabledUnsafe: Bool {
+        if UserDefaults.standard.object(forKey: "proOcrEnabled") == nil {
+            return true
+        }
+        return UserDefaults.standard.bool(forKey: "proOcrEnabled")
+    }
+
     public var isOcrEnabled: Bool {
         get {
             lock.lock()
             defer { lock.unlock() }
-            if UserDefaults.standard.object(forKey: "proOcrEnabled") == nil {
-                return true
-            }
-            return UserDefaults.standard.bool(forKey: "proOcrEnabled")
+            return isOcrEnabledUnsafe
         }
         set {
             setOcrEnabled(newValue)
@@ -132,7 +136,7 @@ public final class ContentManager {
     private func shouldYield() -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        if !isOcrEnabled {
+        if !isOcrEnabledUnsafe {
             return true
         }
         if isBackgroundBusy || Date() < typingUntil {
@@ -189,7 +193,7 @@ public final class ContentManager {
             guard let self = self else { return }
             self.lock.lock()
             self.lastSources = sources
-            guard self.isOcrEnabled else {
+            guard self.isOcrEnabledUnsafe else {
                 self.lock.unlock()
                 return
             }
@@ -219,7 +223,7 @@ public final class ContentManager {
             scanAndIndex(sources: currentSources)
 
             lock.lock()
-            if let next = pendingSources, isOcrEnabled {
+            if let next = pendingSources, isOcrEnabledUnsafe {
                 pendingSources = nil
                 currentSources = next
                 lock.unlock()
