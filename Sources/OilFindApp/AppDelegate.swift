@@ -86,6 +86,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
         if let limited = indexRequest { startIndex(limited: limited) }
+        if state.isShowing != true {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+                self?.panel.show(source: .reopen)
+            }
+        }
         if let failure = SystemUpdateFiles().cleanupAfterLaunch(application: Bundle.main.bundleURL, current: UpdateManager.current) {
             UpdateManager.shared.reportLaunchFailure(failure)
         }

@@ -34,8 +34,11 @@ for target in package["targets"]:
         shutil.copytree(binary / name, resources / name)
 ' "$BINARY_DIR" "$APP_PATH/Contents/Resources"
 SELF_SIGNED="Oil Find Self-Signed"
+APPLE_DEV="$(security find-identity -v -p codesigning | grep -o 'Apple Development: [^"]*' | head -n 1 || true)"
 if [[ -n "${OILFIND_SIGN_IDENTITY:-}" ]]; then
     codesign --force --sign "$OILFIND_SIGN_IDENTITY" --identifier com.oiloil.find --options runtime --timestamp "$APP_PATH"
+elif [[ -n "$APPLE_DEV" ]]; then
+    codesign --force --sign "$APPLE_DEV" --identifier com.oiloil.find "$APP_PATH"
 elif security find-identity -v -p codesigning | grep -q "\"$SELF_SIGNED\""; then
     # Stable identity: macOS keeps Full Disk Access across updates. See scripts/create-signing-cert.sh.
     codesign --force --sign "$SELF_SIGNED" --identifier com.oiloil.find "$APP_PATH"

@@ -114,6 +114,7 @@ final class SearchPanel: NSPanel {
             }
             Theme.Motion.animate(layer, "transform", to: NSValue(caTransform3D: CATransform3DIdentity), using: Theme.Motion.reduced ? nil : Theme.Motion.panelIn)
         }
+        NSApp.activate(ignoringOtherApps: true)
         orderFrontRegardless(); makeKey()
         searchController.panelWillShow(); searchController.searchField.focus(selectAll: true)
         fade = WindowFade(window: self, target: 1, duration: Theme.Motion.reduced ? Theme.Motion.reducedFade : Theme.Motion.panelInFade, curve: .easeOut)
