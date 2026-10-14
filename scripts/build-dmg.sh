@@ -7,7 +7,7 @@ cd "$PROJECT_DIR"
 # 1. 确保构建最新的 App
 "$PROJECT_DIR/scripts/build-app.sh"
 
-APP_PATH="$PROJECT_DIR/build/Oil Find.app"
+APP_PATH="$PROJECT_DIR/build/Oil Find Plus.app"
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Contents/Info.plist" 2>/dev/null || echo "1.6.2-plus")"
 DMG_NAME="OilFind-Plus-v${VERSION}-macOS-arm64.dmg"
 DMG_PATH="$PROJECT_DIR/build/$DMG_NAME"
@@ -19,7 +19,7 @@ rm -rf "$STAGING_DIR" "$DMG_PATH"
 mkdir -p "$STAGING_DIR"
 
 # 复制 App 到 staging 目录，保留属性和签名
-ditto "$APP_PATH" "$STAGING_DIR/Oil Find.app"
+ditto "$APP_PATH" "$STAGING_DIR/Oil Find Plus.app"
 
 # 创建指向 /Applications 的软链接，方便用户拖拽安装
 ln -s /Applications "$STAGING_DIR/Applications"

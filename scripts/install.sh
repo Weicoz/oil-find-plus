@@ -26,10 +26,10 @@ rm -rf "/Applications/Sift.app" "$HOME/Library/Application Support/Sift" "$HOME/
 if defaults read com.oiloil.sift >/dev/null 2>&1; then
     defaults delete com.oiloil.sift
 fi
-ditto "$PROJECT_DIR/build/Oil Find.app" "/Applications/Oil Find.app"
+ditto "$PROJECT_DIR/build/Oil Find Plus.app" "/Applications/Oil Find Plus.app"
 for ((attempt = 1; attempt <= 5; attempt++)); do
-    if open "/Applications/Oil Find.app"; then exit 0; fi
+    if open "/Applications/Oil Find Plus.app"; then exit 0; fi
     if ((attempt < 5)); then sleep 1; fi
 done
-printf '%s\n' 'Oil Find could not be opened after 5 attempts.' >&2
+printf '%s\n' 'Oil Find Plus could not be opened after 5 attempts.' >&2
 exit 1

@@ -1,11 +1,9 @@
 <p align="center">
-  <img src="./assets/readme/hero.svg" width="100%" alt="Oil Find：苹果版的 Everything。按 ⇧⌘F，输入即出结果。">
+  <img src="./assets/readme/hero.svg" width="100%" alt="Oil Find Plus：苹果版的 Everything 增强版。按 ⇧⌘F，输入即出结果。">
 </p>
 
 <p align="center">
-  <a href="https://github.com/oil-oil/oil-find/releases/latest"><b>下载</b></a>
-  &nbsp;·&nbsp;
-  <a href="https://find.oiloil.org">官网</a>
+  <a href="https://github.com/Weicoz/oil-find-plus/releases/latest"><b>下载 DMG / ZIP</b></a>
   &nbsp;·&nbsp;
   <a href="./README.md">English</a>
 </p>
@@ -13,13 +11,18 @@
 <p align="center">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="./assets/readme/search-zh-dark.png">
-  <img src="./assets/readme/search-zh-light.png" width="100%" alt="Oil Find 的搜索面板：输入 readme，8 条结果按相关度排列，匹配的部分标成蓝色，底栏显示这次搜索用了 0.8 毫秒。">
+  <img src="./assets/readme/search-zh-light.png" width="100%" alt="Oil Find Plus 的搜索面板：输入 readme，8 条结果按相关度排列，匹配的部分标成蓝色，底栏显示这次搜索用了 0.8 毫秒。">
 </picture>
 </p>
 
-Oil Find 是 macOS 上的文件搜索工具，思路和 Windows 上的 Everything 一样：自己给磁盘上的文件名建一份内存索引，不依赖 Spotlight。按 ⇧⌘F，屏幕正中弹出搜索框，每打一个字，结果就跟着出来；文件新建、改名、删除，索引都会实时更新。
+Oil Find Plus 是 macOS 上的极速文件搜索工具（基于 Oil Find 的增强全开源版本），思路和 Windows 上的 Everything 一样：自己给磁盘上的文件名建一份内存索引，不依赖 Spotlight。按 ⇧⌘F，屏幕正中弹出搜索框，每打一个字，结果就跟着出来；文件新建、改名、删除，索引都会实时更新。
 
-按文件名搜索的全部功能都在免费版里，包括外置磁盘，代码开源。搜图片和文档里的内容、搜已经拔掉的磁盘，是付费的 [Pro](#oil-find-pro) 功能。
+**Plus 增强特性**：
+- **集成 Pro 全功能开源**：文档（PDF、Word、RTF、TXT 等）全文搜索与 Apple Vision OCR 图片（PNG、JPG、JPEG、HEIC、WEBP）文字检索全量内置，开箱即用。
+- **开放全盘扫描**：全盘任意用户空间与外置卷均可检索内容，智能过滤系统包与开发构建缓存，零垃圾索引。
+- **能效核心与休眠调度**：降为后台 QoS 并在 OCR 间隙动态节流，零风扇狂转、不发烫。
+- **数据库事务批处理**：杜绝 FTS5 SQLite 频繁刷盘与体积异常膨胀。
+- **防闪屏优化**：彻底切断索引写入触发的列表闪烁循环。
 
 ## 为什么快
 
@@ -114,28 +117,20 @@ Pro 和免费版是同一个安装包：
 需要 macOS 14 和 Swift 5.10 以上（Xcode 15.3 或更新）。
 
 ```sh
-git clone https://github.com/oil-oil/oil-find.git
-cd oil-find
+git clone https://github.com/Weicoz/oil-find-plus.git
+cd oil-find-plus
 swift test
-scripts/build-app.sh   # 生成 build/Oil Find.app
+scripts/build-dmg.sh   # 生成 build/OilFind-Plus-v1.6.2-plus-macOS-arm64.dmg
 scripts/install.sh     # 构建并安装到「应用程序」
 ```
 
-从源码构建得到的是免费版，不含 Pro。自己构建的应用使用临时签名，每次重新构建后，需要重新授予一次完全磁盘访问权限。
+本仓库已完整开源内置 Pro 全功能，无需额外购买或激活。自己构建的应用使用临时签名，首次运行请在「系统设置」->「隐私与安全性」允许运行。
 
 ## 隐私
 
-- 只读取文件名、大小和修改时间，不读文件内容。Pro 开启图片或文档内容搜索后，会在本机读取这些文件提取文字，结果同样只存在本机。
+- 只读取文件名、大小和修改时间，不读文件内容。开启图片或文档内容搜索后，只在本地小核后台读取文件提取文字，所有数据和 FTS 索引 100% 保存在本机。
 - 索引只保存在本机的 `~/Library/Application Support/Oil Find/`。
-- 每天检查一次新版本：只请求一个版本信息文件，不带任何设备或使用数据，可以在设置里关闭。
-- 使用 Pro 时，授权每天联网校验一次，只发送授权码、设备标识和设备名。
-
-## 目前的限制
-
-- 只支持 Apple 芯片和 macOS 14 及以上。
-- 不支持网络卷。
-- 外置磁盘拔掉后，免费版搜不到上面的文件；Pro 可以。
-- 免费版只搜文件名；Pro 能搜图片和文档里的文字。
+- 不上报任何设备或使用数据。
 
 ## 项目结构
 
@@ -146,14 +141,9 @@ scripts/install.sh     # 构建并安装到「应用程序」
 | `Sources/OilFindApp` | AppKit 应用和设置界面 |
 | `Sources/OilFind` | 应用入口 |
 | `Sources/oilfind-cli` | 命令行工具，用来测速和排查问题 |
-| `site` | 官网 [find.oiloil.org](https://find.oiloil.org) |
-
-索引的数据结构和设计约束见 [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md)，开发约定见 [AGENTS.md](./AGENTS.md)。
-
-## 参与贡献
-
-欢迎提 Issue 和 Pull Request。项目只做文件搜索这一件事，匹配、排序、索引、性能和界面方面的改进都欢迎。Pro 功能（图片和文档内容、拔掉的磁盘也能搜）在私有仓库里维护，实现这些功能的 Pull Request 不会合并。
+| `Pro/Sources/OilFindPro` | Pro 扩展：全文内容检索（SQLite FTS5）、文档解析与 Vision OCR |
+| `scripts` | 打包（`build-app.sh`、`build-dmg.sh`）与安装脚本 |
 
 ## 许可证
 
-本仓库的代码使用 [MIT](./LICENSE) 许可证。Pro 模块不在本仓库里，不开源；Releases 和官网的安装包包含它。
+本仓库的代码基于 [MIT](./LICENSE) 许可证开源。

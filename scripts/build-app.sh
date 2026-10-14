@@ -3,10 +3,10 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$PROJECT_DIR"
 CONFIGURATION=release
-APP_PATH="$PROJECT_DIR/build/Oil Find.app"
+APP_PATH="$PROJECT_DIR/build/Oil Find Plus.app"
 case "${1:-}" in
     '') [[ $# -eq 0 ]] || exit 2 ;;
-    --debug) [[ $# -eq 1 ]] || exit 2; CONFIGURATION=debug; APP_PATH="$PROJECT_DIR/build/debug/Oil Find.app" ;;
+    --debug) [[ $# -eq 1 ]] || exit 2; CONFIGURATION=debug; APP_PATH="$PROJECT_DIR/build/debug/Oil Find Plus.app" ;;
     *) printf '%s\n' 'Usage: scripts/build-app.sh [--debug]' >&2; exit 2 ;;
 esac
 swift build -c "$CONFIGURATION"

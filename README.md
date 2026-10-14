@@ -1,11 +1,9 @@
 <p align="center">
-  <img src="./assets/readme/hero.en.svg" width="100%" alt="Oil Find: Everything, for the Mac. Press ⇧⌘F and results appear as you type.">
+  <img src="./assets/readme/hero.en.svg" width="100%" alt="Oil Find Plus: Everything, for the Mac (Enhanced Edition). Press ⇧⌘F and results appear as you type.">
 </p>
 
 <p align="center">
-  <a href="https://github.com/oil-oil/oil-find/releases/latest"><b>Download</b></a>
-  &nbsp;·&nbsp;
-  <a href="https://find.oiloil.org/en">Website</a>
+  <a href="https://github.com/Weicoz/oil-find-plus/releases/latest"><b>Download DMG / ZIP</b></a>
   &nbsp;·&nbsp;
   <a href="./README.zh-CN.md">简体中文</a>
 </p>
@@ -13,13 +11,18 @@
 <p align="center">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="./assets/readme/search-en-dark.png">
-  <img src="./assets/readme/search-en-light.png" width="100%" alt="The Oil Find search panel: readme is typed, eight results are ranked by relevance with the matching part in blue, and the footer shows the search took 0.2 milliseconds.">
+  <img src="./assets/readme/search-en-light.png" width="100%" alt="The Oil Find Plus search panel: readme is typed, eight results are ranked by relevance with the matching part in blue, and the footer shows the search took 0.2 milliseconds.">
 </picture>
 </p>
 
-Oil Find is a file search tool for macOS that works like Everything on Windows: it keeps its own in-memory index of every file name on your disk instead of relying on Spotlight. Press ⇧⌘F, a search field appears in the middle of the screen, and results update with every keystroke. When files are created, renamed or deleted, the index follows along in real time.
+Oil Find Plus is a fast, lightweight file search tool for macOS (enhanced, fully open-source edition based on Oil Find) that works like Everything on Windows: it keeps its own in-memory index of every file name on your disk instead of relying on Spotlight. Press ⇧⌘F, a search field appears in the middle of the screen, and results update with every keystroke. When files are created, renamed or deleted, the index follows along in real time.
 
-Everything about searching by file name, external drives included, is in the free, open-source version. Searching the contents of images and documents, and drives you've unplugged, is part of the paid [Pro](#oil-find-pro) add-on.
+**Plus Features**:
+- **Fully Integrated Open-Source Pro Capabilities**: Native document content full-text search (PDF, Word, RTF, TXT, etc.) and Apple Vision OCR image text retrieval (PNG, JPG, JPEG, HEIC, WEBP) included out of the box with no paid key required.
+- **Full-Disk Content Coverage**: Search anywhere across user directories and external drives, with smart exclusion of system paths and dependency caches (`node_modules`, `Pods`, etc.).
+- **Energy-Efficient Background Scheduling**: OCR and content indexing run under `qos: .background` on Apple Silicon efficiency cores with 80ms throttle sleeps—silent, cold, and fan-free.
+- **Batch Transaction Commits**: Prevents SQLite FTS5 WAL disk bloating.
+- **Anti-Flicker & Debounce**: Fixes FSEvents indexing feedback loops and UI list flickering.
 
 ## Why it's fast
 
@@ -114,28 +117,20 @@ To uninstall, quit Oil Find and delete Oil Find from Applications and `~/Library
 Requires macOS 14 and Swift 5.10 or later (Xcode 15.3 or newer).
 
 ```sh
-git clone https://github.com/oil-oil/oil-find.git
-cd oil-find
+git clone https://github.com/Weicoz/oil-find-plus.git
+cd oil-find-plus
 swift test
-scripts/build-app.sh   # builds build/Oil Find.app
+scripts/build-dmg.sh   # builds build/OilFind-Plus-v1.6.2-plus-macOS-arm64.dmg
 scripts/install.sh     # builds and installs into Applications
 ```
 
-Building from source gives you the free version, without Pro. Your own builds are ad-hoc signed, so you need to grant Full Disk Access again after each rebuild.
+This repository includes full Pro functionality built-in and open-source out of the box with no license key needed. Self-built apps use ad-hoc signatures; upon first run, permit the application in "System Settings" -> "Privacy & Security".
 
 ## Privacy
 
-- Oil Find reads file names, sizes and modification dates only, never file contents. With Pro image or document content search on, it reads those files on your Mac to extract their text, and the results stay on your Mac too.
+- Oil Find reads file names, sizes and modification dates only, never file contents. With image or document content search on, it parses files on your Mac using background efficiency cores. All data and FTS indexes stay 100% local on your Mac.
 - The index stays on your Mac in `~/Library/Application Support/Oil Find/`.
-- A daily update check fetches one version file and sends no device or usage data. You can turn it off in Settings.
-- With Pro, the license is verified online once a day. Only the license key, a device identifier and the device name are sent.
-
-## Current limits
-
-- Apple silicon and macOS 14 or later only.
-- Network volumes aren't supported.
-- After you unplug an external drive, the free version can't search its files; Pro can.
-- The free version searches file names only; Pro also searches the text inside images and documents.
+- No device, telemetry, or usage data is reported.
 
 ## Project layout
 
@@ -146,14 +141,11 @@ Building from source gives you the free version, without Pro. Your own builds ar
 | `Sources/OilFindApp` | The AppKit app and Settings |
 | `Sources/OilFind` | The app's entry point |
 | `Sources/oilfind-cli` | Command-line tool for benchmarks and troubleshooting |
-| `site` | The website, [find.oiloil.org](https://find.oiloil.org/en) |
-
-See [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) for the index design and [AGENTS.md](./AGENTS.md) for development conventions.
-
-## Contributing
-
-Issues and pull requests are welcome. The project does one thing, file search, so improvements to matching, ranking, indexing, performance and the interface are all in scope. Pro features (image and document content, searching unplugged drives) are maintained in a private repository, and pull requests that implement them won't be merged.
+| `Pro/Sources/OilFindPro` | Pro extension: SQLite FTS5 content search, document extractors, Vision OCR |
+| `scripts` | Packaging (`build-app.sh`, `build-dmg.sh`) and installation scripts |
 
 ## License
+
+This repository is licensed under the [MIT](./LICENSE) license.
 
 The code in this repository is licensed under [MIT](./LICENSE). The Pro module isn't in this repository and isn't open source; the builds on Releases and the website include it.
