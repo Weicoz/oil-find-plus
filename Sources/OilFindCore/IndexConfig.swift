@@ -51,7 +51,7 @@ public struct IndexConfig {
     }
     public static func standard(limited: Bool = false) -> IndexConfig {
         let home = NSHomeDirectory()
-        var paths = ["/System/Volumes", "/Volumes", "/dev", "/cores", "/.vol", "/private/var/folders", "/private/var/db", "/private/var/vm", "/private/var/run", "/Library/Caches", "\(home)/Library/Caches", "\(home)/.Trash"]
+        var paths = ["/System/Volumes", "/Volumes", "/dev", "/cores", "/.vol", "/private/var/folders", "/private/var/db", "/private/var/vm", "/private/var/run", "/Library/Caches", "\(home)/Library/Caches", "\(home)/.Trash", "\(home)/Library/Application Support/Oil Find"]
         if limited { paths += ["Library/Containers", "Library/Group Containers", "Library/Daemon Containers", "Library/Mobile Documents", "Library/CloudStorage"].map { "\(home)/\($0)" } }
         return IndexConfig(excludedPaths: paths, excludedNames: Set(".Spotlight-V100 .fseventsd .DocumentRevisions-V100 .TemporaryItems .Trashes .MobileBackups".split(separator: " ").map(String.init)), limitedMode: limited)
     }

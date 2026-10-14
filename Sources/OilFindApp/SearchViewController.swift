@@ -187,10 +187,19 @@ final class SearchViewController: NSViewController, NSWindowDelegate, NSMenuDele
            Date().timeIntervalSince(result.createdAt) <= 600 { return }
         startSearch(preserveSelection: true)
     }
+    private var indexRefreshWorkItem: DispatchWorkItem?
     func indexChanged() {
         refreshProgress()
         supplementaryProvider?.sourcesDidChange(searchSources)
-        if view.window?.isVisible == true { refreshSearch() }
+        if view.window?.isVisible == true {
+            indexRefreshWorkItem?.cancel()
+            let workItem = DispatchWorkItem { [weak self] in
+                guard let self, self.view.window?.isVisible == true else { return }
+                self.refreshSearch()
+            }
+            indexRefreshWorkItem = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: workItem)
+        }
     }
     func managerStateChanged(_ state: IndexManager.State) {
         refreshProgress()
@@ -268,7 +277,9 @@ final class SearchViewController: NSViewController, NSWindowDelegate, NSMenuDele
                 self.diagnostics = query.diagnostics
                 if deferNames { return }
                 if refresh {
-                    self.results.refresh(found)
+                    if supplementary == nil {
+                        self.results.refresh(found)
+                    }
                 } else {
                     self.pendingNewSearch = nil
                     if preserveSelection, self.results.result != nil { self.results.refresh(found) }
@@ -278,7 +289,7 @@ final class SearchViewController: NSViewController, NSWindowDelegate, NSMenuDele
             if supplementary != nil {
                 group.notify(queue: self.queue) { [weak self] in
                     guard let self, self.generation.current(token) else { return }
-                    if box.hits.isEmpty && !deferNames { return }
+                    if box.hits.isEmpty && !deferNames && !refresh { return }
                     let combined = box.hits.isEmpty ? found : found.supplement(box.hits, options: options)
                     DispatchQueue.main.async { [weak self] in
                         guard let self, self.generation.current(token), combined.isCurrent(self.searchSources) else { return }
