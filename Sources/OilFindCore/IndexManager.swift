@@ -18,7 +18,11 @@ public final class IndexManager {
     private let eventKey = DispatchSpecificKey<Bool>(), saveKey = DispatchSpecificKey<Bool>()
     private var currentState: State = .idle, currentStore: IndexStore?, currentScanner: Scanner?
     private var rescanning = false, active = false, generation = 0, summary: ApplySummary?
-    private var scanWatcher: FSWatcher?, bufferedEvents: [FSChange] = [], bufferingToken: Int?, bufferedRescan = false
+    private var scanWatcher: FSWatcher?, bufferedEvents: [String: FSChange] = [:], bufferingToken: Int?, bufferedRescan = false
+    private var bufferedEventBytes = 0
+    // 后台重建被限速到每秒 4000 项，200 万条目的重建要跑几分钟，这段时间事件只进缓冲。
+    // 上限压得太低会溢出并置 bufferedRescan，重建完成又立刻排队下一轮，形成自我喂养的重扫循环。
+    internal var bufferedEventByteLimit = 32 * 1024 * 1024
     private var watcher: FSWatcher?, timer: DispatchSourceTimer?
     internal var onBeforeLoadedHashBuild: (() -> Void)?
     internal var onRescanStart: (() -> Void)?
@@ -26,6 +30,12 @@ public final class IndexManager {
     internal var onBufferedEvents: (([FSChange]) -> Void)?
     internal var onUpdaterCreated: ((IndexUpdater) -> Void)?
     private var recoveryRescanPending = false
+    // Scheduling a scan does not repair the published catalog's replay interval.
+    private var unresolvedLossCursor: UInt64?
+    private var watcherEpoch: UInt64 = 0, scanStartEventId: UInt64 = 0
+    internal var watcherEpochForTesting: UInt64 {
+        DispatchQueue.getSpecific(key: eventKey) == true ? watcherEpoch : eventQueue.sync { watcherEpoch }
+    }
     private var updater: IndexUpdater?
     private weak var savedStore: IndexStore?
     private var savedVersion: UInt64 = 0
@@ -218,20 +228,29 @@ public final class IndexManager {
         let scanner = Scanner(config: config, threads: isRescan ? 1 : min(2, ProcessInfo.processInfo.activeProcessorCount))
         if isRescan { scanner.entriesPerSecond = IndexManager.backgroundScanEntriesPerSecond }
         let startId = volumeUUID.flatMap { _ in device(config: config).map(FSWatcher.currentEventId(forDevice:)) } ?? FSWatcher.currentEventId()
-        if volumeUUID != nil && uuid == nil {
-            eventQueue.sync {
-                guard self.valid(token), let device = self.device(config: config) else { return }
-                self.scanWatcher?.stop(); self.bufferedEvents.removeAll(keepingCapacity: true)
-                self.bufferingToken = token; self.bufferedRescan = false
-                let monitor = FSWatcher(paths: [config.rootPath], sinceWhen: UInt64(kFSEventStreamEventIdSinceNow), device: device, queue: self.eventQueue) { [weak self] changes, rescan in
-                    guard let self, self.valid(token) else { return }
-                    if self.bufferingToken == token {
-                        self.bufferedEvents.append(contentsOf: changes); self.bufferedRescan = self.bufferedRescan || rescan
-                        self.onBufferedEvents?(changes)
-                    } else { self.handleEvents(changes, mustRescanAll: rescan) }
-                }
-                if monitor.start() { self.scanWatcher = monitor }
+        eventQueue.sync {
+            guard self.valid(token) else { return }
+            self.scanStartEventId = startId
+            // A fresh live stream precedes every scan. Replaying the lost historical stream
+            // after rebuilding can deliver the same loss again and schedule endless rebuilds.
+            let epoch = self.watcherEpoch &+ 1
+            let monitor = FSWatcher(paths: [config.rootPath], sinceWhen: UInt64(kFSEventStreamEventIdSinceNow),
+                device: self.volumeUUID == nil ? nil : self.device(config: config), queue: self.eventQueue) { [weak self] changes, rescan in
+                self?.receiveEvents(changes, mustRescanAll: rescan, token: token, epoch: epoch)
             }
+            let watching = monitor.start()
+            if watching {
+                self.watcherEpoch = epoch
+                self.watcher?.stop(); self.watcher = nil; self.scanWatcher?.stop()
+                self.scanWatcher = monitor; self.bufferingToken = token
+                self.bufferedEvents.removeAll(keepingCapacity: true); self.bufferedEventBytes = 0; self.bufferedRescan = false
+            }
+            // Any loss delivered before this scan starts is covered by this scan. Loss on
+            // the new stream while scanning is tracked separately and still queues recovery.
+            self.recoveryRescanPending = false
+            #if DEBUG
+            NSLog("Oil Find file scan start: watermark=%llu epoch=%llu fresh=%d", startId, self.watcherEpoch, watching ? 1 : 0)
+            #endif
         }
         onScannerCreated?(scanner)
         let proceed = locked { () -> Bool in
@@ -239,7 +258,22 @@ public final class IndexManager {
         }
         guard proceed else { return }
         guard var output = scanner.run(), valid(token) else {
-            eventQueue.async { if self.valid(token) { self.locked { self.currentScanner = nil; self.rescanning = false; if !isRescan { self.active = false } }; if !isRescan { self.setState(.idle) } } }; return
+            eventQueue.async {
+                guard self.valid(token) else { return }
+                self.locked { self.currentScanner = nil; self.rescanning = false; if !isRescan { self.active = false } }
+                if isRescan {
+                    // Preserve the old catalog's replay cursor if opening the scan root failed.
+                    if self.unresolvedLossCursor == nil { self.unresolvedLossCursor = self.store.map { store in store.read { store.lastEventId } } ?? startId }
+                    _ = self.adoptScanWatcher(token: token)
+                    self.recoveryRescanPending = true
+                    self.eventQueue.asyncAfter(deadline: .now() + 60) { [weak self] in
+                        guard let self, self.valid(token) else { return }; self.startPendingRecovery()
+                    }
+                } else {
+                    self.scanWatcher?.stop(); self.scanWatcher = nil; self.bufferingToken = nil
+                    self.bufferedEvents.removeAll(); self.bufferedEventBytes = 0; self.bufferedRescan = false; self.setState(.idle)
+                }
+            }; return
         }
         // 消费式建库：扫描缓冲边拷边放，重建峰值不再叠加扫描输出。
         let s = IndexStore(consuming: &output, config: config)
@@ -252,46 +286,97 @@ public final class IndexManager {
         eventQueue.async { [weak self] in
             guard let self, self.valid(token) else { return }
             self.watcher?.stop(); self.watcher = nil
-            self.locked { self.currentStore = s; self.currentScanner = nil; self.rescanning = false; self.hashMs = ms }
+            let adopted = self.adoptScanWatcher(token: token)
+            let buffered = Array(self.bufferedEvents.values)
+            let lost = self.bufferedRescan || self.recoveryRescanPending
             let updater = IndexUpdater(config: config)
-            self.onUpdaterCreated?(updater)
             self.locked { self.updater = updater }
+            self.onUpdaterCreated?(updater)
+            // Reconcile before publishing. A concurrent save may observe the old safe catalog
+            // or the fully prepared replacement, never a cursor temporarily beyond a known gap.
+            var batch: ApplySummary?
+            if !lost && !buffered.isEmpty { batch = updater.apply(buffered, to: s) }
+            guard self.valid(token), !updater.isCancelled else { return }
+            let installed = s.read { s.needsCompaction ? s.compacted() : s }
+            self.bufferedEvents.removeAll(keepingCapacity: true); self.bufferedEventBytes = 0; self.bufferedRescan = false
+            self.unresolvedLossCursor = lost ? startId : nil
+            self.recoveryRescanPending = lost
+            self.locked { self.currentStore = installed; self.currentScanner = nil; self.rescanning = false; self.hashMs = ms }
+            if let batch {
+                let callback = self.locked { self.summary = batch; return self.batchCallback }
+                DispatchQueue.main.async { callback?(batch) }
+            }
             self.setState(.ready); self.notifyIndex(replaced: true)
             DispatchQueue.global(qos: .utility).async { _ = Pinyin.shared }
-            if let monitor = self.scanWatcher, self.bufferingToken == token {
-                self.scanWatcher = nil; self.watcher = monitor; self.bufferingToken = nil
-                let buffered = self.bufferedEvents; self.bufferedEvents.removeAll(keepingCapacity: true)
-                self.handleEvents(buffered, mustRescanAll: false)
-                if self.bufferedRescan { self.recoveryRescanPending = true }; self.bufferedRescan = false
-            } else { self.startWatcher(s, token: token) }
+            if !adopted { self.startWatcher(installed, token: token) }
             self.saveNow(); self.startTimer()
             self.scanLatestConfigIfNeeded()
             self.startPendingRecovery()
         }
     }
+    @discardableResult private func adoptScanWatcher(token: Int) -> Bool {
+        guard let monitor = scanWatcher, bufferingToken == token else { return false }
+        scanWatcher = nil; watcher = monitor; bufferingToken = nil
+        return true
+    }
     private func startWatcher(_ s: IndexStore, token: Int) {
+        watcherEpoch &+= 1
+        let epoch = watcherEpoch
         // 这三个字段由 saveQueue 上的接管在写锁内改写，取快照必须持读锁。
         let snapshot = s.read { (root: s.rootPath, uuid: s.fsEventsUUID, eventId: s.lastEventId) }
         let sinceWhen = volumeUUID != nil && snapshot.uuid.isEmpty ? UInt64(kFSEventStreamEventIdSinceNow) : snapshot.eventId
         let w = FSWatcher(paths: [snapshot.root], sinceWhen: sinceWhen, device: volumeUUID == nil ? nil : device(config: config), queue: eventQueue) { [weak self] changes, rescan in
-            guard let self, self.valid(token) else { return }
-            if let w = self.watcher { self.locked { self.replayCount = w.replayedEventCount; self.dataPrefix = w.reportedDataPrefix } }
-            self.handleEvents(changes, mustRescanAll: rescan)
+            self?.receiveEvents(changes, mustRescanAll: rescan, token: token, epoch: epoch)
         }
         watcher = w
         if !w.start() { fputs("Oil Find: cannot start FSEvents\n", stderr) }
     }
-    // Test injection and FSEvents share the event-queue implementation.
-    internal func injectEvents(_ changes: [FSChange], mustRescanAll: Bool) {
+    private func receiveEvents(_ changes: [FSChange], mustRescanAll: Bool, token: Int, epoch: UInt64) {
+        guard valid(token), epoch == watcherEpoch else {
+            #if DEBUG
+            if mustRescanAll { NSLog("Oil Find stale file recovery ignored: events=%d min=%llu max=%llu epoch=%llu current=%llu", changes.count, changes.map(\.eventId).min() ?? 0, changes.map(\.eventId).max() ?? 0, epoch, watcherEpoch) }
+            #endif
+            return
+        }
+        if let monitor = scanWatcher ?? watcher { locked { replayCount = monitor.replayedEventCount; dataPrefix = monitor.reportedDataPrefix } }
+        if bufferingToken == token || unresolvedLossCursor != nil {
+            // A root loss is not a usable subtree update. The replacement scan handles it;
+            // applying it synchronously here would perform another full walk on eventQueue.
+            if !mustRescanAll {
+                for change in changes {
+                    if var existing = bufferedEvents[change.path] {
+                        existing.flags |= change.flags; existing.eventId = max(existing.eventId, change.eventId)
+                        bufferedEvents[change.path] = existing
+                    } else {
+                        let cost = change.path.utf8.count + 96
+                        if cost > bufferedEventByteLimit - bufferedEventBytes { bufferedRescan = true; continue }
+                        bufferedEvents[change.path] = change; bufferedEventBytes += cost
+                    }
+                }
+            }
+            bufferedRescan = bufferedRescan || mustRescanAll
+            onBufferedEvents?(changes)
+            #if DEBUG
+            if mustRescanAll { NSLog("Oil Find buffered file recovery: events=%d min=%llu max=%llu watermark=%llu epoch=%llu", changes.count, changes.map(\.eventId).min() ?? 0, changes.map(\.eventId).max() ?? 0, scanStartEventId, epoch) }
+            #endif
+        } else { handleEvents(changes, mustRescanAll: mustRescanAll) }
+    }
+    // Test injection and FSEvents share the event-queue implementation, including stream identity.
+    internal func injectEvents(_ changes: [FSChange], mustRescanAll: Bool, watcherEpoch: UInt64? = nil) {
         eventQueue.async { [weak self] in
             guard let self, self.locked({ self.active }) else { return }
-            self.handleEvents(changes, mustRescanAll: mustRescanAll)
+            self.receiveEvents(changes, mustRescanAll: mustRescanAll, token: self.locked { self.generation }, epoch: watcherEpoch ?? self.watcherEpoch)
         }
     }
     private func handleEvents(_ changes: [FSChange], mustRescanAll: Bool) {
         if mustRescanAll {
+            #if DEBUG
+            let flags = Set(changes.map { String($0.flags, radix: 16) }).sorted().joined(separator: ",")
+            NSLog("Oil Find file recovery: events=%d flags=%@ pending=%d min=%llu max=%llu watermark=%llu epoch=%llu", changes.count, flags, isRescanning ? 1 : 0, changes.map(\.eventId).min() ?? 0, changes.map(\.eventId).max() ?? 0, scanStartEventId, watcherEpoch)
+            #endif
+            if unresolvedLossCursor == nil { unresolvedLossCursor = self.store.map { store in store.read { store.lastEventId } } }
             if isRescanning { recoveryRescanPending = true }
-            else { beginRescan() }
+            else { beginRescan(reason: "lost-events") }
             return
         }
         guard !changes.isEmpty, let store = self.store, let updater = locked({ self.updater }) else { return }
@@ -326,14 +411,17 @@ public final class IndexManager {
         }
     }
     private func scanLatestConfigIfNeeded() {
-        if store?.configFingerprint != fingerprint(config) { beginRescan() }
+        if store?.configFingerprint != fingerprint(config) { beginRescan(reason: "fingerprint-change") }
     }
-    private func beginRescan() {
+    private func beginRescan(reason: String = "requested") {
         let token: Int? = locked {
             guard active && !offline && currentState == .ready && !rescanning else { return nil }
             rescanning = true; return generation
         }
         guard let token else { return }
+        #if DEBUG
+        NSLog("Oil Find file rescan: reason=%@", reason)
+        #endif
         let config = self.config
         onRescanStart?()
         scanQueue.async { [weak self] in
@@ -345,7 +433,7 @@ public final class IndexManager {
     private func startPendingRecovery() {
         guard recoveryRescanPending, !isRescanning else { return }
         recoveryRescanPending = false
-        beginRescan()
+        beginRescan(reason: "recovery")
     }
     private func notifyIndex(replaced: Bool) {
         let now = CFAbsoluteTimeGetCurrent()
@@ -417,9 +505,10 @@ public final class IndexManager {
                 return pending
             }
             pending.0?.cancel(); pending.1?.cancel()
-            self.recoveryRescanPending = false
+            self.recoveryRescanPending = false; self.unresolvedLossCursor = nil
+            self.watcherEpoch &+= 1
             self.watcher?.stop(); self.watcher = nil
-            self.scanWatcher?.stop(); self.scanWatcher = nil; self.bufferingToken = nil; self.bufferedEvents.removeAll(); self.bufferedRescan = false
+            self.scanWatcher?.stop(); self.scanWatcher = nil; self.bufferingToken = nil; self.bufferedEvents.removeAll(); self.bufferedEventBytes = 0; self.bufferedRescan = false
             self.timer?.cancel(); self.timer = nil; self.pendingNotification?.cancel(); self.pendingNotification = nil
             self.setState(.idle)
         }

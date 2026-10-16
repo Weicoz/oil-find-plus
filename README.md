@@ -19,6 +19,7 @@ Oil Find Plus is a fast, lightweight file search tool for macOS (enhanced, fully
 
 **Plus Features**:
 - **Fully Integrated Open-Source Pro Capabilities**: Native document content full-text search (PDF, Word, RTF, TXT, etc.) and Apple Vision OCR image text retrieval (PNG, JPG, JPEG, HEIC, WEBP) included out of the box with no paid key required.
+- **Local AI Conversation Search**: Search your on-device Claude Code, Claude desktop Code sessions, Codex, and WorkBuddy conversations; All searches files and topics together, and AI Topics narrows to conversations only. Regular Claude web chats, WorkBuddy cloud content not saved locally, archived or deleted WorkBuddy sessions, temporary Quick Asks, and subagent sessions are out of scope.
 - **Full-Disk Content Coverage**: Search anywhere across user directories and external drives, with smart exclusion of system paths and dependency caches (`node_modules`, `Pods`, etc.).
 - **Energy-Efficient Background Scheduling**: OCR and content indexing run under `qos: .background` on Apple Silicon efficiency cores with 80ms throttle sleeps—silent, cold, and fan-free.
 - **Batch Transaction Commits**: Prevents SQLite FTS5 WAL disk bloating.
@@ -81,6 +82,7 @@ The free version is open source and free forever. Pro is the add-on built on top
 | | Free | Pro |
 | --- | :---: | :---: |
 | Search by file name: pinyin, wildcards, regex, filters by kind, size and date | ✓ | ✓ |
+| Local AI topics: Claude Code, desktop Code sessions, Codex, and WorkBuddy | ✓ | ✓ |
 | Live updates, Quick Look, drag and drop, full keyboard control | ✓ | ✓ |
 | Excluded folders and file types, in-app updates | ✓ | ✓ |
 | External drives: indexed when plugged in, kept up to date | ✓ | ✓ |
@@ -123,9 +125,9 @@ This repository includes full Pro functionality built-in and open-source out of 
 
 ## Privacy
 
-- Oil Find reads file names, sizes and modification dates only, never file contents. With image or document content search on, it parses files on your Mac using background efficiency cores. All data and FTS indexes stay 100% local on your Mac.
+- File-name search reads names, sizes, and modification dates only; local AI conversation search additionally reads locally saved titles and conversation text from Claude Code, Codex, and WorkBuddy, and never uploads them. With image or document content search on, it parses files on your Mac using background efficiency cores. All data and FTS indexes stay 100% local on your Mac.
 - The index stays on your Mac in `~/Library/Application Support/Oil Find/`.
-- No device, telemetry, or usage data is reported.
+- A daily update check fetches one version file and sends no device or usage data. You can turn it off in Settings.
 
 ## Project layout
 
