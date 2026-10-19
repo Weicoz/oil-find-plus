@@ -146,7 +146,9 @@ case "scan":
     var config = IndexConfig.standard(limited: args.contains("--limited"))
     fullScope(&config)
     config.rootPath = IndexConfig(rootPath: option("--root", fallback: "/")).rootPath
-    guard let output = Scanner(config: config).run() else { fputs("scan failed\n", stderr); exit(1) }
+    let scanner = Scanner(config: config, threads: Int(option("--threads", fallback: "")) ?? ProcessInfo.processInfo.activeProcessorCount)
+    if let eps = Double(option("--eps", fallback: "")), eps > 0 { scanner.entriesPerSecond = eps }
+    guard let output = scanner.run() else { fputs("scan failed\n", stderr); exit(1) }
     let store = IndexStore(scan: output, config: config)
     do { try store.save(to: db) } catch { fputs("save failed: \(error)\n", stderr); exit(1) }
     report(store, scanSeconds: output.elapsed)

@@ -227,9 +227,11 @@ playground xcarchive dsym rtfd scptd lproj logicx band screenstudio pages number
 | --- | --- |
 | 主线程 | 界面、结果渲染（读锁内取单行数据） |
 | 搜索队列 | 串行，userInteractive；内部用 `DispatchQueue.concurrentPerform` 分块并行 |
-| 扫描线程 | 应用后台完整扫描最多 2 个，utility 优先级；独立扫描器默认使用 `activeProcessorCount` |
+| 扫描线程 | 首次建库最多 2 个，utility 优先级；后台重建固定 1 个并限速；独立扫描器默认使用 `activeProcessorCount` |
 | 事件队列 | 串行，utility；FSEvents 回调与批量应用变更 |
 | 保存队列 | 串行，background |
+
+后台重建（FSEvents 事件丢弃触发的全量重扫、配置指纹变化、7 天过期）走限速路径：单线程，且 `Scanner.entriesPerSecond` 取 `IndexManager.backgroundScanEntriesPerSecond`（默认 4000 项/秒，`OILFIND_SCAN_EPS` 可覆盖，`0` 关闭）。重扫期间旧索引继续服务搜索，磁盘约 200 万条目时重建耗时约 8 分钟，平均 CPU 保持个位数；首次建库、CLI 与测试不受影响。
 
 新查询到来时取消正在执行的旧查询：搜索函数接收 `isCancelled: () -> Bool`，每处理完一个分块检查一次。
 

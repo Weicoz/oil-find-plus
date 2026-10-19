@@ -32,6 +32,14 @@ public final class IndexManager {
     private var pendingNotification: DispatchWorkItem?, lastNotification = -Double.infinity
     private var stateCallback: ((State) -> Void)?, indexCallback: (() -> Void)?, batchCallback: ((ApplySummary) -> Void)?
     private var replayCount = 0, dataPrefix = false, hashMs = 0.0
+    /// 后台重建索引的吞吐上限（entries/s）。0 关闭；可用 OILFIND_SCAN_EPS 覆盖。
+    /// 后台重建本来就不阻塞搜索（旧索引仍在服务），慢一点换取 CPU 常驻个位数。
+    public static let backgroundScanEntriesPerSecond: Double = {
+        if let raw = ProcessInfo.processInfo.environment["OILFIND_SCAN_EPS"], let value = Double(raw), value >= 0 {
+            return value
+        }
+        return 4000
+    }()
     public init(config: IndexConfig, dbURL: URL, volumeUUID: String? = nil, settingsDefaults: UserDefaults? = .standard) {
         self.config = config; self.dbURL = dbURL; self.volumeUUID = volumeUUID
         self.settingsDefaults = settingsDefaults
@@ -191,7 +199,11 @@ public final class IndexManager {
             return
         }
         // Background rebuilds keep spare cores for interactive work; CLI benchmarks can still opt into wider scans.
-        let startId = volumeUUID.flatMap { _ in device(config: config).map(FSWatcher.currentEventId(forDevice:)) } ?? FSWatcher.currentEventId(), scanner = Scanner(config: config, threads: min(2, ProcessInfo.processInfo.activeProcessorCount))
+        // 首次建库保持双线程全速，避免用户久等；后台重建改为单线程 + 吞吐上限，
+        // 把 1.2M 目录项的扫描从"一分钟 90% CPU 尖峰"拉平成低占用的长尾任务。
+        let scanner = Scanner(config: config, threads: isRescan ? 1 : min(2, ProcessInfo.processInfo.activeProcessorCount))
+        if isRescan { scanner.entriesPerSecond = IndexManager.backgroundScanEntriesPerSecond }
+        let startId = volumeUUID.flatMap { _ in device(config: config).map(FSWatcher.currentEventId(forDevice:)) } ?? FSWatcher.currentEventId()
         if volumeUUID != nil && uuid == nil {
             eventQueue.sync {
                 guard self.valid(token), let device = self.device(config: config) else { return }

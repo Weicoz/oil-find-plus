@@ -71,6 +71,9 @@ internal final class DirectoryDescriptor {
 public final class Scanner {
     public let config: IndexConfig
     public let threads: Int
+    /// 每秒最多读取的目录项数；0 表示不限速。
+    /// 后台重建索引时用限速把平均 CPU 压到个位数，代价是扫描时间变长。
+    public var entriesPerSecond: Double = 0
     private let condition = NSCondition()
     private var tasks: [DirTask] = []
     private let descriptorLock = NSLock()
@@ -156,8 +159,21 @@ public final class Scanner {
         home = config.rootPath == NSHomeDirectory() ? 0 : UInt32.max
         condition.unlock()
         let bufferSlots = ScanBufferSlots(count: threads)
+        let paceBudget = max(0, entriesPerSecond) / Double(max(1, threads))
         DispatchQueue.concurrentPerform(iterations: threads) { worker in
             var local = ScanBuffer()
+            // 每个 worker 独立记账；按预算把读取节拍拉平，避免一口气把 CPU 打满。
+            var pacedEntries = 0.0
+            var paceAnchor = CFAbsoluteTimeGetCurrent()
+            func pace(_ added: Int) {
+                guard paceBudget > 0, added > 0 else { return }
+                pacedEntries += Double(added)
+                let elapsed = CFAbsoluteTimeGetCurrent() - paceAnchor
+                let allowed = paceBudget * elapsed
+                guard pacedEntries > allowed else { return }
+                let sleepFor = min(0.05, (pacedEntries - allowed) / paceBudget)
+                if sleepFor > 0 { usleep(useconds_t(sleepFor * 1_000_000)) }
+            }
             let scratchSize = 256 * 1024
             let scratch = UnsafeMutableRawPointer.allocate(byteCount: scratchSize, alignment: 8)
             let entries = UnsafeMutablePointer<oilfind_dirent>.allocate(capacity: scratchSize / 32)
@@ -195,6 +211,7 @@ public final class Scanner {
                             condition.lock(); let stop = cancelled; condition.unlock()
                             if stop { break }
                             if n <= 0 { if n < 0 && (errno == EPERM || errno == EACCES) { task.path.dropLast().withContiguousStorageIfAvailable { record(.noAccess, $0) } }; break }
+                            pace(Int(n))
                             var batch: [Candidate] = []
                             batch.reserveCapacity(Int(n))
                             for i in 0..<Int(n) {
