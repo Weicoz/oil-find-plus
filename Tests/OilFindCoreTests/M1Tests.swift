@@ -275,4 +275,45 @@ final class M1Tests: XCTestCase {
         XCTAssertEqual(Searcher.search(Query.parse("ascii|xmwd"),in: store)!.total,count-3)
         XCTAssertEqual(Set(Searcher.search(Query.parse("éabc"),options: .init(pinyin: false),in: store)!.items),[1,2])
     }
+
+    /// 消费式建库：结果与普通建库逐条一致，并且建完就把扫描缓冲还了回去。
+    /// 重建全盘索引时这一项就是几百 MB —— 扫描输出（names 段往往上百 MB）与索引数组不再叠加。
+    func testConsumingBuildMatchesScanBuildAndReleasesBuffers() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("OilFindTests-\(UUID().uuidString)")
+        defer { try? fm.removeItem(at: root) }
+        try fm.createDirectory(at: root.appendingPathComponent("a"), withIntermediateDirectories: true)
+        try fm.createDirectory(at: root.appendingPathComponent("项目"), withIntermediateDirectories: true)
+        for name in ["a/one.txt", "a/two.md", "项目/文档.md", "项目/说明.txt"] {
+            try Data("x".utf8).write(to: root.appendingPathComponent(name))
+        }
+        var config = IndexConfig.standard(); config.rootPath = root.path
+        var output = try XCTUnwrap(Scanner(config: config, threads: 2).run())
+        let expected = IndexStore(scan: output, config: config)
+        XCTAssertFalse(output.buffers.allSatisfy { $0.ids.isEmpty }, "快照应当带回扫描数据")
+
+        let consumed = IndexStore(consuming: &output, config: config)
+        XCTAssertEqual(consumed.count, expected.count)
+        XCTAssertEqual(consumed.allocatedBytes, expected.allocatedBytes)
+        XCTAssertEqual(consumed.altCount, expected.altCount)
+        for i in 0..<consumed.count { XCTAssertEqual(consumed.path(UInt32(i)), expected.path(UInt32(i))) }
+        XCTAssertTrue(output.buffers.allSatisfy { $0.ids.isEmpty && $0.parents.isEmpty && $0.sizes.isEmpty && $0.mtimes.isEmpty
+            && $0.flags.isEmpty && $0.depths.isEmpty && $0.kinds.isEmpty && $0.nameLens.isEmpty && $0.nameBytes.isEmpty },
+                      "建库后扫描缓冲必须已归还，否则峰值仍会叠加")
+        // 消费式建库出来的索引照常能搜到中文名（备用名段没被截断）
+        XCTAssertEqual(Searcher.search(Query.parse("文档"), in: consumed)!.total, 1)
+    }
+
+    /// 页归还助手：只标记完全落在块内的整页，地址不对齐或不足一页时安全地什么都不做。
+    func testPageReleaseHelperIsSafeOnTinyBuffers() {
+        releasePagesToSystem(nil, bytes: 4096)
+        var small = [UInt8](repeating: 7, count: 64)
+        small.releasePagesForReuse()
+        XCTAssertEqual(small[0], 7, "不足一页的缓冲不该被标记，内容原样保留")
+        var big = [UInt8](repeating: 3, count: 1 << 20)
+        big.releasePagesForReuse()
+        XCTAssertEqual(big.count, 1 << 20)
+        big[0] = 9
+        XCTAssertEqual(big[0], 9, "标记过的页在复用前仍可正常读写")
+    }
 }

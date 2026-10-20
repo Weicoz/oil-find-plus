@@ -17,7 +17,8 @@ public struct ScanOutput {
     public init(buffers: [ScanBuffer], count: Int, homeIndex: UInt32, elapsed: Double, finishedAt: UInt64, coverage: CoverageStats = CoverageStats()) {
         self.buffers = buffers; self.count = count; self.homeIndex = homeIndex; self.elapsed = elapsed; self.finishedAt = finishedAt; self.coverage = coverage
     }
-    public let buffers: [ScanBuffer]
+    /// 建库时会逐个 worker 消费并清空（见 `IndexStore.init(consuming:config:)`）。
+    public var buffers: [ScanBuffer]
     public let count: Int
     public let homeIndex: UInt32
     public let elapsed: Double
@@ -52,7 +53,14 @@ private final class ScanBufferSlots: @unchecked Sendable {
         get { pointer[index] }
         set { pointer[index] = newValue }
     }
-    func snapshot() -> [ScanBuffer] { Array(UnsafeBufferPointer(start: pointer, count: count)) }
+    /// 取快照后清空槽位：槽位不再持有各 worker 的数组，快照成为唯一持有者。
+    /// 不清的话，扫描器还活着（IndexManager 的 currentScanner）时那几段数组释放不掉，
+    /// 建库边填边释放就成了空转。
+    func snapshot() -> [ScanBuffer] {
+        let result = Array(UnsafeBufferPointer(start: pointer, count: count))
+        for i in 0..<count { pointer[i] = ScanBuffer() }
+        return result
+    }
 }
 private final class DirectoryOpenHook: @unchecked Sendable {
     let body: (String) -> Void

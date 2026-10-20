@@ -138,13 +138,20 @@ public final class IndexStore {
     }
     /// 释放自己拥有的堆段并解映射；接管过映射的段不受影响（ownedMask 已清零）。
     private func releaseOwnedSections() {
-        func release<T>(_ pointer: UnsafeMutablePointer<T>, _ section: Section) {
-            if ownedMask & (1 << section.rawValue) != 0 { free(pointer) }
+        // free 之后这些页仍留在 malloc 的空闲链表里、照样算进 phys_footprint（实测数据见 MemoryReclaim.swift），
+        // 所以先显式把页交还系统再 free：一次全盘重建就是几百 MB 的常驻内存差别。
+        func release<T>(_ pointer: UnsafeMutablePointer<T>, _ section: Section, _ elements: Int) {
+            guard ownedMask & (1 << section.rawValue) != 0 else { return }
+            releasePagesToSystem(UnsafeMutableRawPointer(pointer), bytes: elements * MemoryLayout<T>.stride)
+            free(pointer)
         }
-        release(nameOff, .nameOff); release(parent, .parent); release(sizeC, .sizeC); release(mtime, .mtime)
-        release(flags, .flags); release(depth, .depth); release(kind, .kind); release(names, .names)
-        release(altOff, .altOff); release(altOwner, .altOwner); release(altNames, .altNames)
-        if let table { release(table, .table) }
+        release(nameOff, .nameOff, capacity + 1); release(parent, .parent, capacity)
+        release(sizeC, .sizeC, capacity); release(mtime, .mtime, capacity)
+        release(flags, .flags, capacity); release(depth, .depth, capacity); release(kind, .kind, capacity)
+        release(names, .names, namesCapacity)
+        release(altOff, .altOff, altCapacity + 1); release(altOwner, .altOwner, altCapacity)
+        release(altNames, .altNames, altNamesCapacity)
+        if let table { release(table, .table, tableCapacity) }
         if let mapping { munmap(mapping.base, mapping.length) }
         ownedMask = 0; heapSections = 0; mapping = nil; table = nil
         tableCapacity = 0; tableUsed = 0

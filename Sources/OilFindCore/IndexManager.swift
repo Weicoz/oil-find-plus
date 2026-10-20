@@ -238,10 +238,11 @@ public final class IndexManager {
             guard active && generation == token else { return false }; currentScanner = scanner; return true
         }
         guard proceed else { return }
-        guard let output = scanner.run(), valid(token) else {
+        guard var output = scanner.run(), valid(token) else {
             eventQueue.async { if self.valid(token) { self.locked { self.currentScanner = nil; self.rescanning = false; if !isRescan { self.active = false } }; if !isRescan { self.setState(.idle) } } }; return
         }
-        let s = IndexStore(scan: output, config: config)
+        // 消费式建库：扫描缓冲边拷边放，重建峰值不再叠加扫描输出。
+        let s = IndexStore(consuming: &output, config: config)
         guard valid(token) else { return }
         s.configFingerprint = fingerprint(config)
         s.scopeFingerprint = scopeFingerprint(config)

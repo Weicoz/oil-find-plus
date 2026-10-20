@@ -161,8 +161,9 @@ case "scan":
     config.rootPath = IndexConfig(rootPath: option("--root", fallback: "/")).rootPath
     let scanner = Scanner(config: config, threads: Int(option("--threads", fallback: "")) ?? ProcessInfo.processInfo.activeProcessorCount)
     if let eps = Double(option("--eps", fallback: "")), eps > 0 { scanner.entriesPerSecond = eps }
-    guard let output = scanner.run() else { fputs("scan failed\n", stderr); exit(1) }
-    let store = IndexStore(scan: output, config: config)
+    guard var output = scanner.run() else { fputs("scan failed\n", stderr); exit(1) }
+    // 消费式建库：拷完一个 worker 就把它那几段数组交还系统，峰值不再等于「扫描缓冲 + 索引数组」。
+    let store = IndexStore(consuming: &output, config: config)
     do { try store.save(to: db) } catch { fputs("save failed: \(error)\n", stderr); exit(1) }
     report(store, scanSeconds: output.elapsed)
 case "stats", "search", "typing", "bench":

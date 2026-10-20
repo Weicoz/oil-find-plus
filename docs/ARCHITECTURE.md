@@ -103,6 +103,8 @@ oil-find/
 
 保存完成后写者立刻接管新文件的映射，把之前拷到堆上的脏页交还内核，常驻内存重新退回干净文件页。`isFileBacked` 表示"整份数据都由映射承载"：仍有任一段在堆上（含重建的哈希表）就为 false。哈希表缺失或校验不过而重建时，重建结果在首次保存时随镜像一起落盘，后续启动不再重建。
 
+释放堆段不能只 `free`：macOS 的 malloc 把页留在 zone 的空闲链表里，`phys_footprint` 与 RSS 都不降（实测 200 MB 的数组释放后仍占 192 MB，`malloc_zone_pressure_relief` 也回收不掉）。`IndexStore.releaseOwnedSections()` 因此在 `free` 之前先 `madvise(MADV_FREE_REUSABLE)`（`Sources/OilFindCore/MemoryReclaim.swift`），页立刻离开常驻内存（实测 192 MB → 2 MB）。全盘重建同理：`init(consuming:config:)` 每拷完一个 worker 就把它的扫描缓冲标成可回收，峰值从「扫描缓冲 + 索引数组」降到两者中的较大者。
+
 保存写同目录临时文件、`fsync` 后 `rename` 原子替换：正在进行的查询继续读旧 inode，既不会读到半成品，也不会因截断触发 SIGBUS。空间检查按旧文件加新临时文件两份计算，段间空洞不占磁盘。
 
 格式 2/3 的紧凑文件仍可读（载入即 memcpy 进堆），首次保存后自动升级为格式 4；旧版本读不了格式 4，会整库重扫。
@@ -117,6 +119,7 @@ oil-find/
 6. 读操作持读锁，写操作持写锁（`pthread_rwlock_t`）。保存整段在**读锁**内完成（`saveSnapshot`/`save(to:)` → `saveLocked`：pwrite/fsync/rename），换来快照一致且不阻塞搜索；写者在这段时间排队等写锁。其余持锁路径不做显式文件 I/O，映射页缺页由内核在访问时补齐。映射段扩容先 `malloc` + 拷贝，发生在写锁内。
 7. 接管新映射是双条件：文件版本号与内存写入计数 `mutationCount` 都必须与保存时的快照一致，否则放弃接管。保存持读锁、写者被排除，但保存结束到接管之间仍有窗口；只比版本号挡不住"版本没变而数据被改"的情况，`mutationCount` 是第二重见证，防止接管把窗口内的写入静默回滚。
 8. 段的堆/映射归属必须显式登记：`malloc` 出来的段（含新建与重建的哈希表）记入所有权掩码，接管时据此释放并交还；漏登记会让内存既不释放也不被识别为脏页。
+9. 归还堆段必须显式交还页：`free` 之前先 `madvise(MADV_FREE_REUSABLE)`，否则常驻内存只涨不落。`init(consuming:config:)` 的调用方在调用后不得再读 `ScanOutput` 的缓冲——页可能已被内核回收。
 
 ### 标志位
 
