@@ -23,7 +23,12 @@ extension IndexStore {
         return (pointer, capacity)
     }
     internal func installHash(_ built: (pointer: UnsafeMutablePointer<UInt32>, capacity: Int)) {
-        free(table); table = built.pointer; tableCapacity = built.capacity; tableUsed = count
+        if let table, ownsSection(.table) { free(table) }
+        table = built.pointer; tableCapacity = built.capacity; tableUsed = count
+        // 新表是堆分配，必须登记所有权：否则释放与接管都会漏掉这 13MB。
+        takeOwnership(.table)
+        // 也是堆段：登记进计数，否则 isFileBacked 会在有堆表时谎报"整份都在映射里"。
+        noteHeapSection()
     }
     private func hashSlot(_ hash: UInt64) -> Int {
         Int(hash.multipliedFullWidth(by: UInt64(tableCapacity)).high)
@@ -80,24 +85,36 @@ extension IndexStore {
         }
         return i
     }
-    private func grow<T>(_ pointer: inout UnsafeMutablePointer<T>, to n: Int) {
-        pointer = realloc(pointer, max(1, n) * MemoryLayout<T>.stride)!.bindMemory(to: T.self, capacity: max(1, n))
+    /// 映射段不能 realloc：先拷到堆上接管所有权，之后的扩容才走 realloc。
+    private func grow<T>(_ pointer: inout UnsafeMutablePointer<T>, _ section: Section, to n: Int) {
+        let elements = max(1, n), bytes = elements * MemoryLayout<T>.stride
+        if ownsSection(section) {
+            pointer = realloc(pointer, bytes)!.bindMemory(to: T.self, capacity: elements)
+            return
+        }
+        let copy = malloc(bytes)!.bindMemory(to: T.self, capacity: elements)
+        let previous = mappedSectionBytes(section) / MemoryLayout<T>.stride
+        if previous > 0 { memcpy(copy, pointer, min(previous, elements) * MemoryLayout<T>.stride) }
+        takeOwnership(section)
+        // 这一段脱离文件映射：从此算堆占用，也不再是干净的只读文件页。
+        noteHeapSection()
+        pointer = copy
     }
     private func ensureEntries() {
         if count < capacity { return }
         capacity = max(count + 1, capacity + max(1, capacity / 2))
-        grow(&nameOff, to: capacity + 1); grow(&parent, to: capacity)
-        grow(&sizeC, to: capacity); grow(&mtime, to: capacity)
-        grow(&flags, to: capacity); grow(&depth, to: capacity); grow(&kind, to: capacity)
+        grow(&nameOff, .nameOff, to: capacity + 1); grow(&parent, .parent, to: capacity)
+        grow(&sizeC, .sizeC, to: capacity); grow(&mtime, .mtime, to: capacity)
+        grow(&flags, .flags, to: capacity); grow(&depth, .depth, to: capacity); grow(&kind, .kind, to: capacity)
     }
     private func appendAlt(_ bytes: [UInt8], owner: UInt32) {
         if altCount == altCapacity {
             altCapacity = max(altCount + 1, altCapacity + max(1, altCapacity / 2))
-            grow(&altOff, to: altCapacity + 1); grow(&altOwner, to: altCapacity)
+            grow(&altOff, .altOff, to: altCapacity + 1); grow(&altOwner, .altOwner, to: altCapacity)
         }
         if altLen + bytes.count > altNamesCapacity {
             altNamesCapacity = max(altLen + bytes.count, altNamesCapacity + max(1, altNamesCapacity / 2))
-            grow(&altNames, to: altNamesCapacity)
+            grow(&altNames, .altNames, to: altNamesCapacity)
         }
         altOff[altCount] = UInt32(altLen); altOwner[altCount] = owner
         bytes.withUnsafeBufferPointer { if !$0.isEmpty { altNames.advanced(by: altLen).update(from: $0.baseAddress!, count: $0.count) } }
@@ -109,7 +126,7 @@ extension IndexStore {
         ensureEntries()
         if namesLen + name.count > namesCapacity {
             namesCapacity = max(namesLen + name.count, namesCapacity + max(1, namesCapacity / 2))
-            grow(&names, to: namesCapacity)
+            grow(&names, .names, to: namesCapacity)
         }
         let i = UInt32(count), n = count, pi = Int(p)
         let inherited = Classifier.inheritedForChildren(dirFlags: flags[pi], dirName: nameBytes(p), dirDepth: depth[pi], parentName: nameBytes(parent[Int(parent[pi])]), isHome: p == homeIndex)
@@ -138,6 +155,7 @@ extension IndexStore {
             table![slot] = i; tableUsed += 1
         }
         if homeIndex == UInt32.max && depth[n] == Self.homeDepth && name.elementsEqual(Self.homeName) && resolve(path: Self.homePath) == i { homeIndex = i }
+        noteMutation()
         return i
     }
     private static let homePath = NSHomeDirectory()
@@ -159,17 +177,19 @@ extension IndexStore {
         let inherited = Classifier.inheritedForChildren(dirFlags: flags[p], dirName: nameBytes(parent[n]), dirDepth: depth[p], parentName: nameBytes(parent[Int(parent[p])]), isHome: UInt32(p) == homeIndex)
         flags[n] = Classifier.flags(name: name, type: attrs.type, bsdFlags: attrs.bsdFlags, inherited: inherited)
         kind[n] = Classifier.kind(name: name, flags: flags[n])
+        noteMutation()
         return i
     }
     @discardableResult public func remove(_ i: UInt32) -> Bool {
         let n = Int(i), dir = flags[n] & SiftFlag.dir != 0
-        if isLive(i) { flags[n] |= SiftFlag.deleted; liveCount -= 1; deletedCount += 1 }
+        if isLive(i) { flags[n] |= SiftFlag.deleted; liveCount -= 1; deletedCount += 1; noteMutation() }
         return dir
     }
     public func sweep() {
         var removed: UInt32 = 0
         sift_sweep(flags, parent, count, &removed)
         liveCount -= Int(removed); deletedCount += removed
+        if removed > 0 { noteMutation() }
     }
     public var needsCompaction: Bool { Int(deletedCount) > max(100_000, count / 4) }
     public func compacted() -> IndexStore {

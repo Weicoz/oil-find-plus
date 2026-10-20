@@ -32,6 +32,8 @@ public final class IndexManager {
     private var pendingNotification: DispatchWorkItem?, lastNotification = -Double.infinity
     private var stateCallback: ((State) -> Void)?, indexCallback: (() -> Void)?, batchCallback: ((ApplySummary) -> Void)?
     private var replayCount = 0, dataPrefix = false, hashMs = 0.0
+    /// 进程内首次创建管理器的时刻，用于判定同目录下哪些临时文件是上次崩溃的残留。
+    private let startedAt = Date()
     /// 后台重建索引的吞吐上限（entries/s）。0 关闭；可用 OILFIND_SCAN_EPS 覆盖。
     /// 后台重建本来就不阻塞搜索（旧索引仍在服务），慢一点换取 CPU 常驻个位数。
     public static let backgroundScanEntriesPerSecond: Double = {
@@ -153,6 +155,8 @@ public final class IndexManager {
             guard let self, !self.locked({ self.active }) else { return }
             let token = self.locked { self.active = true; self.offline = false; self.replayCount = 0; self.dataPrefix = false; self.generation += 1; return self.generation }
             self.setState(.loading)
+            // 上次崩溃可能留下整份索引临时文件（保存走 .tmp.<pid> + rename），启动时清掉。
+            IndexStore.removeStaleTemporaryFiles(nextTo: self.dbURL.path, olderThan: self.startedAt)
             let config = self.config
             self.scanQueue.async { [weak self] in
                 guard let self, self.valid(token) else { return }
@@ -171,15 +175,25 @@ public final class IndexManager {
                         self.saveQueue.sync { self.savedStore = s; self.savedVersion = rootChanged ? UInt64.max : s.version }
                         self.setState(.ready); self.notifyIndex(replaced: true)
                         DispatchQueue.global(qos: .utility).async { _ = Pinyin.shared }
-                        self.onBeforeLoadedHashBuild?()
-                        let begin = CFAbsoluteTimeGetCurrent()
-                        let built = s.makeHash()
-                        s.write { s.installHash(built) }
-                        self.locked { self.hashMs = (CFAbsoluteTimeGetCurrent() - begin) * 1000 }
+                        // 文件自带可用哈希表时才算「载入即完整」；表缺失或校验不过就要重建并补写回文件。
+                        let carriedTable = s.read({ s.hashReady })
+                        if carriedTable {
+                            // v4 文件自带哈希表：省掉 13MB 临时表与一次全量构建。
+                            self.locked { self.hashMs = 0 }
+                        } else {
+                            self.onBeforeLoadedHashBuild?()
+                            let begin = CFAbsoluteTimeGetCurrent()
+                            let built = s.makeHash()
+                            s.write { s.installHash(built) }
+                            self.locked { self.hashMs = (CFAbsoluteTimeGetCurrent() - begin) * 1000 }
+                        }
                         let updater = IndexUpdater(config: config)
                         self.onUpdaterCreated?(updater)
                         self.locked { self.updater = updater }
                         self.startWatcher(s, token: token); self.startTimer()
+                        // 两种情况立刻写回并换回映射态：旧格式载入的索引常驻堆内存；文件没有可用哈希表时
+                        // 表只活在内存里。不补写的话每次启动都要重建 13MB 的表。
+                        if !s.read({ s.isFileBacked }) || !carriedTable { self.saveQueue.async { [weak self] in self?.saveChanged(force: true) } }
                         self.scanLatestConfigIfNeeded()
                         if UInt64(Date().timeIntervalSince1970) > s.scanFinishedAt + 7*86400 {
                             self.eventQueue.asyncAfter(deadline: .now()+60) { [weak self] in if let self, self.valid(token) { self.rescan() } }
@@ -255,7 +269,10 @@ public final class IndexManager {
         }
     }
     private func startWatcher(_ s: IndexStore, token: Int) {
-        let w = FSWatcher(paths: [s.rootPath], sinceWhen: volumeUUID != nil && s.fsEventsUUID.isEmpty ? UInt64(kFSEventStreamEventIdSinceNow) : s.lastEventId, device: volumeUUID == nil ? nil : device(config: config), queue: eventQueue) { [weak self] changes, rescan in
+        // 这三个字段由 saveQueue 上的接管在写锁内改写，取快照必须持读锁。
+        let snapshot = s.read { (root: s.rootPath, uuid: s.fsEventsUUID, eventId: s.lastEventId) }
+        let sinceWhen = volumeUUID != nil && snapshot.uuid.isEmpty ? UInt64(kFSEventStreamEventIdSinceNow) : snapshot.eventId
+        let w = FSWatcher(paths: [snapshot.root], sinceWhen: sinceWhen, device: volumeUUID == nil ? nil : device(config: config), queue: eventQueue) { [weak self] changes, rescan in
             guard let self, self.valid(token) else { return }
             if let w = self.watcher { self.locked { self.replayCount = w.replayedEventCount; self.dataPrefix = w.reportedDataPrefix } }
             self.handleEvents(changes, mustRescanAll: rescan)
@@ -285,6 +302,8 @@ public final class IndexManager {
             // The event queue is the sole writer; readers may continue during copying.
             let compact = store.read { store.compacted() }
             locked { currentStore = compact }; notifyIndex(replaced: true)
+            // 压实结果落盘并换回映射态，避免旧索引与新索引同时常驻堆内存。
+            saveQueue.async { [weak self] in self?.saveChanged() }
         } else { notifyIndex(replaced: false) }
     }
     public func explain(path: String) -> CoverageExplanation {
@@ -347,15 +366,40 @@ public final class IndexManager {
         timer.setEventHandler { [weak self] in self?.saveQueue.async { [weak self] in self?.saveChanged() } }
         self.timer = timer; timer.resume()
     }
-    private func saveChanged() {
+    private var adoptionRetries = 0
+    private func saveChanged(force: Bool = false) {
         guard !locked({ offline }), let s = store else { return }
         let version = s.read { s.version }
-        if savedStore === s && savedVersion == version { return }
+        if !force, savedStore === s, savedVersion == version { return }
         do {
             // The saved version is captured under the same read lock as the file snapshot.
             let saved = try s.saveSnapshot(to: dbURL.path)
-            savedStore = s; savedVersion = saved
+            savedStore = s; savedVersion = saved.version
+            adoptSavedMapping(s, saved: saved.version, mutations: saved.mutations)
         } catch { fputs("Oil Find: save failed: \(error)\n", stderr) }
+    }
+    /// 落盘成功后把内存里的索引换回文件映射：同一个 store 对象原地接管刚写好的文件，
+    /// 身份与 version 不变，堆段归还系统，索引页变回不计入物理内存的干净文件页。
+    /// 因此搜索缓存、UI 选择态与来源绑定都不需要失效，也不需要额外通知。
+    private func adoptSavedMapping(_ s: IndexStore, saved: UInt64, mutations: UInt64) {
+        guard let mapped = IndexStore.load(from: dbURL.path) else { scheduleAdoptRetry(s); return }
+        if s.adoptMapping(from: mapped, expectedVersion: saved, expectedMutations: mutations) { adoptionRetries = 0; return }
+        // 落盘那几百毫秒里索引又被改动，文件已落后一版，这次不接管。
+        scheduleAdoptRetry(s)
+    }
+    /// 接管失败后堆段会一直留到下一次改动（可能很久），所以要再存一次把映射换进来。
+    /// 但索引还在写时不重存：改动路径自己会触发下一次保存与接管，在这里反复整份写盘只是白费 IO。
+    /// 于是先记下观察点，3 秒后确认索引已安静再重存；仍在动就顺延，重试有上限。
+    private func scheduleAdoptRetry(_ s: IndexStore) {
+        guard adoptionRetries < 3 else { return }
+        adoptionRetries += 1
+        let mark = s.read { (version: s.version, mutations: s.mutationCount) }
+        saveQueue.asyncAfter(deadline: .now() + 3) { [weak self] in
+            guard let self, let current = self.store, current === s, !current.read({ current.isFileBacked }) else { return }
+            let now = current.read { (version: current.version, mutations: current.mutationCount) }
+            guard now.version == mark.version, now.mutations == mark.mutations else { self.scheduleAdoptRetry(s); return }
+            self.saveChanged(force: true)
+        }
     }
     public func saveNow() {
         if DispatchQueue.getSpecific(key: saveKey) == true { saveChanged() }

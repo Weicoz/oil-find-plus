@@ -92,7 +92,10 @@ final class M4Tests: XCTestCase {
         XCTAssertTrue(eventually { manager.isRescanning })
         XCTAssertTrue(manager.store === first)
         XCTAssertNotNil(Searcher.search(Query.parse("leaf"), in: first))
-        XCTAssertTrue(eventually { !manager.isRescanning && manager.store?.configFingerprint == configA.fingerprint })
+        XCTAssertTrue(eventually {
+            guard !manager.isRescanning, let store = manager.store else { return false }
+            return store.read { store.configFingerprint } == configA.fingerprint
+        })
         let second = try XCTUnwrap(manager.store)
         XCTAssertNil(second.read { second.resolve(path: root.path + "/a") })
         manager.saveNow()
@@ -103,7 +106,10 @@ final class M4Tests: XCTestCase {
         var configB = original; configB.userExcludedPaths = [root.path + "/b"]
         var configC = original; configC.userExcludedPaths = [root.path + "/c"]
         manager.updateConfig(configB); manager.updateConfig(configC)
-        XCTAssertTrue(eventually { !manager.isRescanning && manager.store?.configFingerprint == configC.fingerprint })
+        XCTAssertTrue(eventually {
+            guard !manager.isRescanning, let store = manager.store else { return false }
+            return store.read { store.configFingerprint } == configC.fingerprint
+        })
         let final = try XCTUnwrap(manager.store)
         final.read {
             XCTAssertNotNil(final.resolve(path: root.path + "/a/leaf.txt"))
@@ -120,7 +126,10 @@ final class M4Tests: XCTestCase {
         XCTAssertNil(live.read { live.resolve(path: root.path + "/c/hidden.txt") })
         var excludeRoot = original; excludeRoot.userExcludedPaths = ["/"]
         manager.updateConfig(excludeRoot)
-        XCTAssertTrue(eventually { !manager.isRescanning && manager.store?.configFingerprint == excludeRoot.fingerprint })
+        XCTAssertTrue(eventually {
+            guard !manager.isRescanning, let store = manager.store else { return false }
+            return store.read { store.configFingerprint } == excludeRoot.fingerprint
+        })
         let onlyRoot = try XCTUnwrap(manager.store)
         XCTAssertEqual(onlyRoot.read { onlyRoot.liveCount }, 1)
     }

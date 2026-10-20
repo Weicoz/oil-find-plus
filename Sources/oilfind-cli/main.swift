@@ -9,6 +9,18 @@ func option(_ key: String, fallback: String = "") -> String {
     guard let i = args.firstIndex(of: key), i + 1 < args.count else { return fallback }
     return args[i+1]
 }
+/// Activity Monitor 口径：phys_footprint 只算匿名页与压缩页，干净的文件映射页不计入。
+func physFootprintBytes() -> UInt64 {
+    var info = task_vm_info_data_t()
+    var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<natural_t>.size)
+    let result = withUnsafeMutablePointer(to: &info) { pointer in
+        pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { rebound in
+            task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), rebound, &count)
+        }
+    }
+    return result == KERN_SUCCESS ? info.phys_footprint : 0
+}
+
 func report(_ store: IndexStore, scanSeconds: Double? = nil, loadSeconds: Double? = nil) {
     let count = store.count, dirs = (0..<count).reduce(0) { $0 + (store.flags[$1] & SiftFlag.dir != 0 ? 1 : 0) }
     let clean = (0..<count).reduce(0) { n,i in let f = store.flags[i]; return n + (f & SiftFlag.userArea != 0 && f & (SiftFlag.noise | SiftFlag.inPackage | SiftFlag.hidden) == 0 ? 1 : 0) }
@@ -27,6 +39,7 @@ func report(_ store: IndexStore, scanSeconds: Double? = nil, loadSeconds: Double
     print("kinds=" + kinds.enumerated().map { "\($0.offset):\($0.element)" }.joined(separator: " "))
     var usage = rusage(); getrusage(RUSAGE_SELF, &usage)
     print("resident=\(sift_resident_bytes()) bytes rssPeak=\(usage.ru_maxrss) bytes")
+    print("fileBacked=\(store.isFileBacked) mapped=\(store.mappedBytes) bytes physFootprint=\(physFootprintBytes()) bytes")
 }
 let db = option("--db", fallback: dbDefault)
 let searchQueue = DispatchQueue(label: "oilfind-cli.search", qos: .userInteractive)
@@ -157,9 +170,18 @@ case "stats", "search", "typing", "bench":
     guard let store = IndexStore.load(from: db) else { fputs("cannot load \(db)\n", stderr); exit(1) }
     let load = CFAbsoluteTimeGetCurrent() - start
     if command == "stats" {
-        let began = CFAbsoluteTimeGetCurrent(); store.write { store.buildHash() }
-        print(String(format: "buildHash=%.3fms", (CFAbsoluteTimeGetCurrent() - began) * 1000))
-        report(store, loadSeconds: load); break
+        if store.hashReady {
+            print("buildHash=skipped (file carries the table)")
+        } else {
+            let began = CFAbsoluteTimeGetCurrent(); store.write { store.buildHash() }
+            print(String(format: "buildHash=%.3fms", (CFAbsoluteTimeGetCurrent() - began) * 1000))
+        }
+        // --rewrite：把载入的索引按 v4 写回（带哈希表）。此处不再就地重新载入——
+        // 旧格式的堆 store 仍被本作用域引用，报告会掺进它的占用，读数没有意义；
+        // 升级后的映射态占用请紧接着再跑一次 stats（那时是新进程、只有映射）。
+        guard args.contains("--rewrite") else { report(store, loadSeconds: load); break }
+        do { try store.save(to: db) } catch { fputs("save failed: \(error)\n", stderr); exit(1) }
+        print("rewritten to v4: \(db)（映射态占用请再运行一次 stats）"); break
     }
     if command == "typing" {
         guard args.count > 1, !args[1].hasPrefix("--") else { fputs("usage: oilfind-cli typing TEXT [--db PATH] [--no-cache]\n", stderr); exit(2) }

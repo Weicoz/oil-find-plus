@@ -34,7 +34,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var indexStateStartedAt = ProcessInfo.processInfo.systemUptime
     private var limited = false
     private var countItem: NSMenuItem?, limitedItem: NSMenuItem?, loginItem: NSMenuItem?, rescanItem: NSMenuItem?
-    static let dbURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Oil Find/index.oilfind")
+    /// OILFIND_INDEX_PATH 可指向别处的索引文件：用于并行对比新旧版本、复现内存问题，
+    /// 不改动正在使用的索引。未设置时仍是标准位置。
+    static let dbURL: URL = {
+        if let override = ProcessInfo.processInfo.environment["OILFIND_INDEX_PATH"], !override.isEmpty {
+            return URL(fileURLWithPath: override)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Oil Find/index.oilfind")
+    }()
     private static let showRequest = Notification.Name("com.oiloil.find.show")
     func applicationDidFinishLaunching(_ notification: Notification) {
         LegacyAuthorizationCleanup.run()

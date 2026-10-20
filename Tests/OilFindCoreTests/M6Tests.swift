@@ -180,29 +180,54 @@ final class M6Tests: XCTestCase {
             try Data([65]).write(to: root.appendingPathComponent("readme.txt"))
             var config = IndexConfig.standard(); config.rootPath = root.path
             let db = root.appendingPathComponent("index.oilfind")
-            let first = IndexManager(config: config, dbURL: db)
-            first.start()
+            // 迁移保存要写盘并 fsync，再重新映射回来；并行跑整个测试套件时磁盘繁忙，5 秒会偶发不够。
             func eventually(_ body: () -> Bool) -> Bool {
-                let deadline = Date().addingTimeInterval(5)
+                let deadline = Date().addingTimeInterval(20)
                 repeat {
                     if body() { return true }
                     RunLoop.current.run(until: Date().addingTimeInterval(0.002))
                 } while Date() < deadline
                 return body()
             }
+            let first = IndexManager(config: config, dbURL: db)
+            first.start()
             XCTAssertTrue(eventually { first.state == .ready }); first.stop()
-            let blocked = DispatchSemaphore(value: 0), started = expectation(description: "loaded hash build queued")
+            // v4 文件自带哈希表：载入后直接可搜索，不排队建表、也不回调建表钩子。
+            XCTAssertTrue(eventually { IndexStore.load(from: db.path)?.isFileBacked == true })
+            let noBuild = expectation(description: "v4 load must not queue a hash build"); noBuild.isInverted = true
             let second = IndexManager(config: config, dbURL: db)
-            second.onBeforeLoadedHashBuild = { started.fulfill(); _ = blocked.wait(timeout: .now() + 5) }
+            second.onBeforeLoadedHashBuild = { noBuild.fulfill() }
             second.start()
+            XCTAssertTrue(eventually { second.state == .ready })
+            let mapped = try XCTUnwrap(second.store)
+            XCTAssertTrue(mapped.isFileBacked)
+            XCTAssertTrue(mapped.read { mapped.hashReady })
+            XCTAssertEqual(Searcher.search(Query.parse("readme"), in: mapped)?.total, 1)
+            second.stop()
+            wait(for: [noBuild], timeout: 1)
+            // 旧格式（v3）文件不带哈希表：建表排在后台，建表完成前也必须能搜索。
+            let legacyDb = root.appendingPathComponent("legacy.oilfind")
+            try writeLegacyV3File(try XCTUnwrap(IndexStore.load(from: db.path)), to: legacyDb)
+            XCTAssertNotNil(IndexStore.load(from: legacyDb.path))
+            let blocked = DispatchSemaphore(value: 0), started = expectation(description: "loaded hash build queued")
+            let third = IndexManager(config: config, dbURL: legacyDb)
+            third.onBeforeLoadedHashBuild = { started.fulfill(); _ = blocked.wait(timeout: .now() + 5) }
+            third.start()
             wait(for: [started], timeout: 5)
-            let loaded = try XCTUnwrap(second.store)
-            XCTAssertEqual(second.state, .ready)
+            let loaded = try XCTUnwrap(third.store)
+            XCTAssertEqual(third.state, .ready)
+            XCTAssertFalse(loaded.isFileBacked)
             XCTAssertFalse(loaded.read { loaded.hashReady })
             XCTAssertEqual(Searcher.search(Query.parse("readme"), in: loaded)?.total, 1)
             blocked.signal()
             XCTAssertTrue(eventually { loaded.read { loaded.hashReady } })
-            second.stop()
+            // 迁移保存后原地换成映射，对象身份与 version 不变。
+            let identity = ObjectIdentifier(loaded), version = loaded.read { loaded.version }
+            XCTAssertTrue(eventually { loaded.isFileBacked })
+            XCTAssertEqual(ObjectIdentifier(try XCTUnwrap(third.store)), identity)
+            XCTAssertGreaterThanOrEqual(loaded.read { loaded.version }, version)
+            XCTAssertTrue(loaded.read { loaded.hashReady })
+            third.stop()
         }
     }
 

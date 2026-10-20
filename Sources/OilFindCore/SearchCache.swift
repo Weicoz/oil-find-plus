@@ -65,7 +65,9 @@ public final class SearchCache {
     private func discardStale(store: IndexStore) {
         entries.removeAll { entry in
             let result = entry.result
-            if result.store === store && result.storeVersion != store.version {
+            // 只淘汰同一 store 的过期版本：其它 store 的条目查不到（matches 要求身份相同），
+            // 但多来源搜索时它们是别的卷的缓存，不能在这里删。
+            if result.store === store, result.storeVersion != store.version {
                 itemCount -= result.items.count
                 return true
             }

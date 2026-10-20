@@ -125,11 +125,11 @@ final class M17Tests: XCTestCase {
             XCTAssertEqual(store.compacted().coverage, store.coverage)
             let data = try Data(contentsOf: db)
             XCTAssertGreaterThan(data.count, 256)
-            var legacy = data
-            let length = (0..<4).reduce(0) { $0 | Int(data[116 + $1]) << ($1 * 8) }
-            legacy.removeLast(length); legacy[8] = 2
-            try legacy.write(to: db)
-            XCTAssertEqual(try XCTUnwrap(IndexStore.load(from: db.path)).coverage, CoverageStats())
+            // 旧格式（v3）文件可以没有统计段：载入后统计为空，其余字段照常可用。
+            try writeLegacyV3File(store, to: db, writeCoverage: false)
+            let legacy = try XCTUnwrap(IndexStore.load(from: db.path))
+            XCTAssertEqual(legacy.coverage, CoverageStats())
+            XCTAssertEqual(legacy.count, store.count)
         }
     }
     func testBatchedNameNegationPreservesFullEvaluationScores() throws {

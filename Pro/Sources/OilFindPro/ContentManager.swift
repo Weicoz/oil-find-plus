@@ -100,6 +100,8 @@ public final class ContentManager {
     private func commitTransactionIfNeeded() {
         guard let db = writeDb, inTransaction else { return }
         sqlite3_exec(db, "COMMIT;", nil, nil, nil)
+        // 提交后把页缓存与 lookaside 还给系统，常驻堆内存不随索引规模增长。
+        sqlite3_db_release_memory(db)
         inTransaction = false
         uncommittedCount = 0
     }
@@ -162,7 +164,8 @@ public final class ContentManager {
         let writeFlags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX
         if sqlite3_open_v2(dbURL.path, &writeDb, writeFlags, nil) == SQLITE_OK {
             sqlite3_busy_timeout(writeDb, 5000)
-            sqlite3_exec(writeDb, "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA cache_size = -1000; PRAGMA temp_store = MEMORY;", nil, nil, nil)
+            // mmap_size 让页缓存走只读文件映射：干净文件页不计入物理内存。
+            sqlite3_exec(writeDb, "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA cache_size = -1000; PRAGMA temp_store = MEMORY; PRAGMA mmap_size = 268435456;", nil, nil, nil)
             let schema = """
             CREATE TABLE IF NOT EXISTS docs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -184,7 +187,7 @@ public final class ContentManager {
         }
         if let rDb = readDb {
             sqlite3_busy_timeout(rDb, 5000)
-            sqlite3_exec(rDb, "PRAGMA query_only = YES; PRAGMA cache_size = -1000;", nil, nil, nil)
+            sqlite3_exec(rDb, "PRAGMA query_only = YES; PRAGMA cache_size = -1000; PRAGMA mmap_size = 268435456;", nil, nil, nil)
         }
     }
 

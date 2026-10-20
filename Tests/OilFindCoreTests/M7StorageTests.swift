@@ -26,9 +26,9 @@ final class M7StorageTests: XCTestCase {
         return store
     }
 
-    private func persistenceStore() -> IndexStore {
+    private func persistenceStore(caseSensitiveNames: Bool = false) -> IndexStore {
         let store = IndexStore(rootPath: "/", count: 3, namesLen: 2, altCount: 2, altLen: 2,
-                               fingerprint: 17, homeIndex: 1, finishedAt: 123)
+                               fingerprint: 17, homeIndex: 1, finishedAt: 123, caseSensitiveNames: caseSensitiveNames)
         store.nameOff[0] = 0; store.nameOff[1] = 0; store.nameOff[2] = 1; store.nameOff[3] = 2
         store.parent[0] = 0; store.parent[1] = 0; store.parent[2] = 0
         store.sizeC[0] = 0; store.sizeC[1] = 1; store.sizeC[2] = 2
@@ -57,16 +57,18 @@ final class M7StorageTests: XCTestCase {
             let store = persistenceStore()
             try store.save(to: url.path)
             let original = try Data(contentsOf: url)
-            XCTAssertEqual(original[8], 3)
+            XCTAssertEqual(original[8], 4)
             XCTAssertNotNil(IndexStore.load(from: url.path))
 
-            let count = 3, namesLen = 2, altCount = 2
-            let nameOffStart = 257
-            let parentStart = nameOffStart + (count + 1) * 4
-            let namesStart = 256 + 1 + (count + 1) * 4 + count * 12 + count * 3
-            let kindStart = namesStart - count
-            let altOffStart = namesStart + namesLen
-            let altOwnerStart = altOffStart + (altCount + 1) * 4
+            let count = 3, altCount = 2
+            // v4 每段按页对齐，偏移由同一套布局算法给出，测试直接复用避免写死魔数。
+            let layout = IndexStore.fileLayout(rootLen: 1, capacities: IndexStore.Capacities(entries: count, names: 2, alt: altCount, altNames: 2, table: 0, coverage: 0))
+            func sectionStart(_ section: IndexStore.Section) -> Int { layout.offsets[section.rawValue] }
+            let nameOffStart = sectionStart(.nameOff)
+            let parentStart = sectionStart(.parent)
+            let kindStart = sectionStart(.kind)
+            let altOffStart = sectionStart(.altOff)
+            let altOwnerStart = sectionStart(.altOwner)
 
             func rejects(_ label: String, _ mutate: (inout Data) -> Void, file: StaticString = #filePath, line: UInt = #line) throws {
                 var damaged = original
@@ -96,6 +98,129 @@ final class M7StorageTests: XCTestCase {
             try rejects("name length must convert to Int safely") { data in self.put64(UInt64.max, at: 16, in: &data) }
             try rejects("alternate name length must convert to Int safely") { data in self.put64(UInt64.max, at: 32, in: &data) }
             try rejects("format version 1 must be rebuilt") { data in self.put32(1, at: 8, in: &data) }
+        }
+    }
+
+    func testV4MappedStoreRoundTripAndGrowth() throws {
+        try withTempDirectory { directory in
+            let url = directory.appendingPathComponent("mapped.idx")
+            let store = persistenceStore()
+            store.buildHash()
+            try store.save(to: url.path)
+
+            let loaded = try XCTUnwrap(IndexStore.load(from: url.path))
+            XCTAssertTrue(loaded.isFileBacked)
+            XCTAssertTrue(loaded.hashReady)
+            XCTAssertEqual(loaded.count, 3)
+            XCTAssertEqual(loaded.capacity, 3)
+            XCTAssertEqual(loaded.name(1), "x")
+            XCTAssertEqual(loaded.resolve(path: "/x"), 1)
+            XCTAssertEqual(loaded.version, 0)
+
+            // 映射段不可 realloc：首次扩容要拷到堆上，且旧数据必须完整。
+            var inserted: UInt32 = 0
+            loaded.write { Array("z".utf8).withUnsafeBufferPointer { inserted = loaded.insert(parent: 0, name: $0, attrs: EntryAttrs(type: 0)) } }
+            XCTAssertEqual(inserted, 3)
+            XCTAssertEqual(loaded.count, 4)
+            XCTAssertEqual(loaded.name(3), "z")
+            XCTAssertEqual(loaded.name(1), "x")
+            XCTAssertEqual(loaded.resolve(path: "/x"), 1)
+            XCTAssertEqual(loaded.resolve(path: "/z"), 3)
+            XCTAssertTrue(loaded.ownsSection(.nameOff))
+            // 没被改写的段仍留在映射里，只有扩容过的段才拷到堆上。
+            XCTAssertFalse(loaded.ownsSection(.altNames))
+            XCTAssertFalse(loaded.ownsSection(.altOff))
+
+            // 改写过之后仍能落盘再读回，容量与内容都不丢。
+            try loaded.save(to: url.path)
+            let reloaded = try XCTUnwrap(IndexStore.load(from: url.path))
+            XCTAssertTrue(reloaded.isFileBacked)
+            XCTAssertEqual(reloaded.count, 4)
+            XCTAssertEqual(reloaded.name(3), "z")
+            XCTAssertEqual(reloaded.resolve(path: "/z"), 3)
+        }
+    }
+
+    func testV4HeaderFieldsRoundTripAndAdoption() throws {
+        try withTempDirectory { directory in
+            let url = directory.appendingPathComponent("header.idx")
+            let store = persistenceStore(caseSensitiveNames: true)
+            store.scopeFingerprint = 0xABCDEF01_23456789
+            store.version = 99; store.lastEventId = 1234; store.fsEventsUUID = "UUID-1234"
+            store.deletedCount = 1; store.liveCount = 2
+            store.buildHash()
+            try store.save(to: url.path)
+
+            let loaded = try XCTUnwrap(IndexStore.load(from: url.path))
+            XCTAssertEqual(loaded.scopeFingerprint, 0xABCDEF01_23456789)
+            XCTAssertEqual(loaded.configFingerprint, 17)
+            XCTAssertEqual(loaded.version, 99)
+            XCTAssertEqual(loaded.lastEventId, 1234)
+            XCTAssertEqual(loaded.scanFinishedAt, 123)
+            XCTAssertEqual(loaded.fsEventsUUID, "UUID-1234")
+            XCTAssertEqual(loaded.homeIndex, 1)
+            XCTAssertEqual(loaded.deletedCount, 1)
+            XCTAssertEqual(loaded.liveCount, 2)
+            XCTAssertTrue(loaded.caseSensitiveNames)
+
+            // 落盘后原地接管：对象身份不变，所有段回到映射，堆段交还系统。
+            XCTAssertFalse(store.isFileBacked)
+            XCTAssertTrue(store.adoptMapping(from: loaded, expectedVersion: 99, expectedMutations: 0))
+            XCTAssertTrue(store.isFileBacked)
+            XCTAssertFalse(loaded.isFileBacked)
+            XCTAssertEqual(store.count, 3)
+            XCTAssertFalse(store.ownsSection(.nameOff))
+            XCTAssertFalse(store.ownsSection(.names))
+            XCTAssertFalse(store.ownsSection(.table))
+            XCTAssertTrue(store.read { store.hashReady })
+            XCTAssertEqual(store.name(1), "x")
+            XCTAssertEqual(store.resolve(path: "/x"), 1)
+
+            // 写入计数是第二重见证：版本没变但数据被写过（调用方漏掉 version 自增）时同样拒绝接管。
+            let snapshotMutations = store.read { store.mutationCount }
+            store.write { Array("zz".utf8).withUnsafeBufferPointer { _ = store.insert(parent: 0, name: $0, attrs: EntryAttrs(type: 0)) } }
+            XCTAssertEqual(store.mutationCount, snapshotMutations + 1)
+            XCTAssertFalse(store.isFileBacked)
+            let stale = try XCTUnwrap(IndexStore.load(from: url.path))
+            XCTAssertFalse(store.adoptMapping(from: stale, expectedVersion: 99, expectedMutations: snapshotMutations))
+            XCTAssertNotNil(store.resolve(path: "/zz"))
+            XCTAssertTrue(stale.isFileBacked)
+
+            // 快照之后又写过（版本已变）就拒绝接管：不能用旧快照覆盖新状态，
+            // 被拒绝的一方也必须完好无损，仍可继续用。
+            store.version = 100
+            let other = try XCTUnwrap(IndexStore.load(from: url.path))
+            XCTAssertFalse(store.adoptMapping(from: other, expectedVersion: 99, expectedMutations: store.read { store.mutationCount }))
+            // 拒绝接管后双方都完好：自己的新写入还在，对方仍是干净的映射态。
+            XCTAssertFalse(store.isFileBacked)
+            XCTAssertNotNil(store.resolve(path: "/zz"))
+            XCTAssertTrue(other.isFileBacked)
+            XCTAssertEqual(other.resolve(path: "/x"), 1)
+        }
+    }
+
+    func testV3FileStillLoadsAndUpgradesToMapped() throws {
+        try withTempDirectory { directory in
+            let url = directory.appendingPathComponent("legacy.idx")
+            let store = persistenceStore()
+            store.buildHash()
+            try writeLegacyV3File(store, to: url)
+
+            let legacy = try XCTUnwrap(IndexStore.load(from: url.path))
+            XCTAssertFalse(legacy.isFileBacked)
+            XCTAssertEqual(legacy.count, 3)
+            XCTAssertEqual(legacy.name(1), "x")
+            // v3 不存哈希表：载入后由调用方补建，这里显式补上再按路径查询。
+            XCTAssertNil(legacy.table)
+            legacy.write { legacy.buildHash() }
+            XCTAssertEqual(legacy.resolve(path: "/x"), 1)
+
+            try legacy.save(to: url.path)
+            let upgraded = try XCTUnwrap(IndexStore.load(from: url.path))
+            XCTAssertTrue(upgraded.isFileBacked)
+            XCTAssertTrue(upgraded.hashReady)
+            XCTAssertEqual(upgraded.count, 3)
+            XCTAssertEqual(upgraded.resolve(path: "/x"), 1)
         }
     }
 
@@ -140,6 +265,114 @@ final class M7StorageTests: XCTestCase {
             let bytes = try Data(contentsOf: url)
             XCTAssertEqual(bytes[112], 1)
             XCTAssertEqual(try XCTUnwrap(IndexStore.load(from: url.path)).caseSensitiveNames, true)
+        }
+    }
+
+    /// 回归（对抗式审查 r1-F1/r3-F1）：接管时若文件没有可用哈希表，自有堆表要留下并重新登记所有权。
+    /// 修复前 releaseOwnedSections 会把这张表 free 掉，随后又把悬垂指针装回 table → 读已释放内存 + double free。
+    func testAdoptionKeepsOwnHeapTableAlive() throws {
+        try withTempDirectory { directory in
+            let url = directory.appendingPathComponent("noTable.idx")
+            // 内容完全相同的孪生索引，但不建哈希表 → 落盘的文件没有表段。
+            let twin = persistenceStore()
+            try twin.save(to: url.path)
+            let tableless = try XCTUnwrap(IndexStore.load(from: url.path))
+            XCTAssertNil(tableless.table)
+            XCTAssertEqual(tableless.count, 3)
+
+            let owner = persistenceStore()
+            owner.buildHash()
+            XCTAssertNotNil(owner.table)
+            XCTAssertTrue(owner.ownsSection(.table))
+
+            XCTAssertTrue(owner.adoptMapping(from: tableless, expectedVersion: owner.version, expectedMutations: owner.mutationCount))
+            // 表还在堆上，就不能谎报「整份由映射承载」。
+            XCTAssertFalse(owner.isFileBacked)
+            XCTAssertTrue(owner.hashReady)
+            XCTAssertTrue(owner.ownsSection(.table))
+            XCTAssertEqual(owner.resolve(path: "/x"), 1)
+
+            // 留下的表必须仍是有效内存：落盘会把整表读一遍，读到已释放内存这里就会暴露。
+            try owner.save(to: url.path)
+            let roundTrip = try XCTUnwrap(IndexStore.load(from: url.path))
+            XCTAssertEqual(roundTrip.count, 3)
+            XCTAssertTrue(roundTrip.hashReady)
+            XCTAssertEqual(roundTrip.resolve(path: "/x"), 1)
+        }
+    }
+
+    /// 回归（对抗式审查 r3-F2）：表里有重复槽时整表作废重建，不能让部分条目静默查不到。
+    func testDuplicateTableSlotRejectsTable() throws {
+        try withTempDirectory { directory in
+            let url = directory.appendingPathComponent("dupTable.idx")
+            let store = persistenceStore()
+            store.buildHash()
+            try store.save(to: url.path)
+            XCTAssertNotNil(try XCTUnwrap(IndexStore.load(from: url.path)).table)
+
+            let capacities = store.capacities
+            let tableOffset = IndexStore.fileLayout(rootLen: store.rootPath.utf8.count, capacities: capacities).offsets[IndexStore.Section.table.rawValue]
+            var data = try Data(contentsOf: url)
+            func slot(_ index: Int) -> UInt32 {
+                (0..<4).reduce(UInt32(0)) { $0 | UInt32(data[tableOffset + index * 4 + $1]) << UInt32($1 * 8) }
+            }
+            // 找出前两个非空槽，把第二个改成与第一个重复 → 必有一个条目再也查不到。
+            var filled: [Int] = []
+            for index in 0..<capacities.table where slot(index) != UInt32.max {
+                filled.append(index)
+                if filled.count == 2 { break }
+            }
+            XCTAssertEqual(filled.count, 2)
+            put32(slot(filled[0]), at: tableOffset + filled[1] * 4, in: &data)
+            try data.write(to: url)
+
+            let loaded = try XCTUnwrap(IndexStore.load(from: url.path))
+            XCTAssertNil(loaded.table)
+            XCTAssertEqual(loaded.count, 3)
+            loaded.write { loaded.buildHash() }
+            XCTAssertEqual(loaded.resolve(path: "/x"), 1)
+        }
+    }
+
+    /// 回归（对抗式审查 r3-F3）：崩溃残留的临时文件要清掉，别的进程正在写的和无关文件不能碰。
+    func testStaleTemporaryFilesRemovedButActiveKept() throws {
+        try withTempDirectory { directory in
+            let db = directory.appendingPathComponent("index.db")
+            let stale = directory.appendingPathComponent("index.db.tmp.999")
+            let active = directory.appendingPathComponent("index.db.tmp.123")
+            let unrelated = directory.appendingPathComponent("other.db.tmp.1")
+            for path in [db.path, stale.path, active.path, unrelated.path] { try Data("x".utf8).write(to: URL(fileURLWithPath: path)) }
+            try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -3600)], ofItemAtPath: stale.path)
+            try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSinceNow: 300)], ofItemAtPath: active.path)
+
+            XCTAssertEqual(IndexStore.removeStaleTemporaryFiles(nextTo: db.path, olderThan: Date()), 1)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: stale.path))
+            XCTAssertTrue(FileManager.default.fileExists(atPath: active.path))
+            XCTAssertTrue(FileManager.default.fileExists(atPath: unrelated.path))
+            XCTAssertTrue(FileManager.default.fileExists(atPath: db.path))
+        }
+    }
+
+    /// 回归（对抗式审查 r3-F4）：统计段坏了只丢统计，不能整库拒绝（否则每次启动全量重扫）。
+    func testCorruptCoverageStillLoadsIndex() throws {
+        try withTempDirectory { directory in
+            let url = directory.appendingPathComponent("coverage.idx")
+            let store = persistenceStore()
+            store.buildHash()
+            var stats = store.coverage
+            stats.buckets[.fileType] = CoverageBucket(count: 7, examples: ["/x"])
+            store.coverage = stats
+            try store.save(to: url.path)
+
+            // 统计段是最后一段：打坏文件末尾 3 字节，结构段完好。
+            var data = try Data(contentsOf: url)
+            for offset in 1...3 { data[data.count - offset] = 0xFF }
+            try data.write(to: url)
+
+            let loaded = try XCTUnwrap(IndexStore.load(from: url.path))
+            XCTAssertEqual(loaded.count, 3)
+            XCTAssertEqual(loaded.name(1), "x")
+            XCTAssertTrue(loaded.coverage.buckets.isEmpty)
         }
     }
 
