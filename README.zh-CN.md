@@ -25,6 +25,25 @@ Oil Find Plus 是 macOS 上的极速文件搜索工具（基于 Oil Find 的增�
 - **数据库事务批处理**：杜绝 FTS5 SQLite 频繁刷盘与体积异常膨胀。
 - **防闪屏优化**：彻底切断索引写入触发的列表闪烁循环。
 
+## 相比官方版本的优化
+
+本仓库在官方版本基础上做了这些优化，数据都在本机实测（Apple M5 / 24 GB，来自 `oilfind-cli` 与活动监视器的 `phys_footprint`）。
+
+| 项目 | 官方版本的做法 | 本仓库的做法与实测 |
+| --- | --- | --- |
+| 索引常驻内存 | 索引常驻堆内存 | 每次保存后换回只读文件映射并归还堆段：135.8 MiB → **1.80 MiB**；应用空闲实测 **364 MB → 76 MB** |
+| 全盘重建峰值内存 | 扫描缓冲与索引同时驻留 | 扫描缓冲边拷边还，页立刻交还系统：峰值 **163 MB → 75 MB（-56%）** |
+| 后台重建 CPU | 多线程全速重建 | 单线程 + 每秒 4000 项限速（`OILFIND_SCAN_EPS` 可调），消除 90% CPU 尖峰 |
+| 冷启动 | 启动后重建约 13 MB 哈希表 | 哈希表随索引文件落盘（v4 格式），载入 **0.15–0.26 秒**，不重建 |
+| 列表刷新 | 索引变动直接刷新列表 | 0.6 秒防抖，切断写入触发的列表闪烁循环 |
+| 启动行为 | 静默进入后台 | 启动后自动激活并弹出搜索面板 |
+| 更新源 | 官方更新服务 | 本仓库 GitHub Releases（`updates/latest.json`） |
+| Pro 功能 | 闭源付费，需要授权码 | 同一安装包内置全部功能，无需授权码、不会过期 |
+| 内容索引能效 | — | 提取队列 `qos: .background`，图片 OCR 每张后让核 80 ms |
+| SQLite 体积 | — | FTS5 批事务提交 + 提交后释放内存 + 256 MB 只读映射 |
+
+官方 1.7.x 的新功能（本地 AI 会话检索、打包启动修复）已同步合入本仓库。
+
 ## 为什么快
 
 - **文件名放在一块连续的内存里。** 几十万个名称按列存放，搜索时从头到尾扫一遍，不给每个文件单独创建对象。
@@ -98,7 +117,7 @@ Pro 和免费版是同一个安装包：
 
 ## 安装
 
-1. 从 [Releases](https://github.com/oil-oil/oil-find/releases/latest) 下载 `Oil-Find.zip`，解压后把 Oil Find 拖进「应用程序」。
+1. 从 [Releases](https://github.com/Weicoz/oil-find-plus/releases/latest) 下载 `OilFind-Plus-v1.7.1-plus-macOS-arm64.dmg`（或同页的 zip），把 Oil Find Plus 拖进「应用程序」。
 2. 第一次打开时，macOS 会拦下来，因为它没有经过 Apple 公证。到「系统设置 → 隐私与安全性」，在页面下方点「仍要打开」。
 3. 按 ⇧⌘F 开始搜索。
 4. 可选：授予「完全磁盘访问权限」后，邮件附件和其他应用的数据也能搜到。不授予也能正常使用。
@@ -107,7 +126,7 @@ Pro 和免费版是同一个安装包：
 
 安装包里带有 Pro，无需激活即可使用，区别见上面的 [Oil Find Pro](#oil-find-pro)。
 
-卸载时退出 Oil Find，删掉「应用程序」里的 Oil Find 和 `~/Library/Application Support/Oil Find` 即可。
+卸载时退出 Oil Find Plus，删掉「应用程序」里的 Oil Find Plus 和 `~/Library/Application Support/Oil Find` 即可。
 
 ## 从源码构建
 
@@ -117,7 +136,7 @@ Pro 和免费版是同一个安装包：
 git clone https://github.com/Weicoz/oil-find-plus.git
 cd oil-find-plus
 swift test
-scripts/build-dmg.sh   # 生成 build/OilFind-Plus-v1.6.2-plus-macOS-arm64.dmg
+scripts/build-dmg.sh   # 生成 build/OilFind-Plus-v1.7.1-plus-macOS-arm64.dmg
 scripts/install.sh     # 构建并安装到「应用程序」
 ```
 
@@ -128,6 +147,7 @@ scripts/install.sh     # 构建并安装到「应用程序」
 - 文件名搜索只读取名称、大小和修改时间；本地 AI 话题搜索还会读取 Claude Code、Codex 和 WorkBuddy 保存在本机的标题与对话正文，都不上传。开启图片或文档内容搜索后，只在本地小核后台读取文件提取文字，所有数据和 FTS 索引 100% 保存在本机。
 - 索引只保存在本机的 `~/Library/Application Support/Oil Find/`。
 - 每天检查一次新版本：只请求一个版本信息文件，不带任何设备或使用数据，可以在设置里关闭。
+- 除此之外不上报任何设备或使用数据。
 
 ## 项目结构
 
