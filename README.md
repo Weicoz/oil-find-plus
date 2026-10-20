@@ -76,7 +76,7 @@ You can also drag results into other apps.
 
 ## Oil Find Pro
 
-The free version is open source and free forever. Pro is the add-on built on top of it: the upstream project ships it closed-source, paid once with a 7-day free trial, while this repository ships the full Pro functionality as open source (see below).
+The free version is open source and free forever. Pro is the add-on built on top of it, fully open source and built in by this repository.
 
 | | Free | Pro |
 | --- | :---: | :---: |
@@ -87,17 +87,12 @@ The free version is open source and free forever. Pro is the add-on built on top
 | External drives stay searchable when unplugged | | ✓ |
 | Image content: text and objects in screenshots and photos | | ✓ |
 | Document content: PDF, Word, PowerPoint, Excel, Pages, Markdown and more | | ✓ |
-| Source code | Open source, MIT | Open source, MIT in this repository (closed source upstream) |
-| Price | Free | $9.99 once (¥49 in mainland China) |
+| Source code | Open source, MIT | Open source, MIT |
 
 Pro and the free version are the same download:
 
-- After downloading from Releases or the website, every free feature works right away and never expires, with no activation.
-- To use Pro, open the Oil Find Pro section in Settings and click Start 7-Day Free Trial, or enter a license key. When a trial ends, only Pro features turn off.
-- Building from source gives you the free version, without Pro.
+- Apps built from this repository include every feature, with no license key and no expiry.
 - Images and documents are processed on your Mac and never uploaded.
-
-Buy it or read more at [find.oiloil.org/en/pro](https://find.oiloil.org/en/pro).
 
 ## Install
 
@@ -108,7 +103,7 @@ Buy it or read more at [find.oiloil.org/en/pro](https://find.oiloil.org/en/pro).
 
 When a new version is out, Oil Find tells you; click Update and Restart. You can turn off automatic checks in Settings.
 
-The download includes Pro, but you can keep using Oil Find for free without activating it. See [Oil Find Pro](#oil-find-pro) above for the difference.
+The download includes Pro; no activation is needed. See [Oil Find Pro](#oil-find-pro) above for the difference.
 
 To uninstall, quit Oil Find and delete Oil Find from Applications and `~/Library/Application Support/Oil Find`.
 

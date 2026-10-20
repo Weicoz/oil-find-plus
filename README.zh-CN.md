@@ -76,7 +76,7 @@ Oil Find Plus 是 macOS 上的极速文件搜索工具（基于 Oil Find 的增�
 
 ## Oil Find Pro
 
-免费版开源，永久免费。Pro 是在它之上的扩展功能：上游官方版本闭源，一次买断并附 7 天免费试用；本仓库已把 Pro 全功能一并开源（见下）。
+免费版开源，永久免费。Pro 是在它之上的扩展功能，本仓库已完整开源内置。
 
 | | 免费版 | Pro |
 | --- | :---: | :---: |
@@ -87,17 +87,12 @@ Oil Find Plus 是 macOS 上的极速文件搜索工具（基于 Oil Find 的增�
 | 外置磁盘拔掉后也能搜到 | | ✓ |
 | 图片内容：截图、照片里的文字与画面 | | ✓ |
 | 文档内容：PDF、Word、PowerPoint、Excel、Pages、Markdown 等 | | ✓ |
-| 源码 | 开源，MIT | 本仓库开源，MIT（上游为闭源） |
-| 价格 | 免费 | ¥49（其他地区 $9.99）一次买断 |
+| 源码 | 开源，MIT | 开源，MIT |
 
 Pro 和免费版是同一个安装包：
 
-- 从 Releases 或官网下载后，免费功能直接可用，不激活也不会过期。
-- 想用 Pro，在设置的 Oil Find Pro 分区点「免费试用 7 天」，或输入授权码。试用结束只停用 Pro 功能，其他照常。
-- 从源码构建得到的是不含 Pro 的免费版。
+- 本仓库构建的应用直接包含全部功能，无需授权码，也不会过期。
 - 图片和文档都在本机处理，不上传。
-
-购买和详情见 [find.oiloil.org/pro](https://find.oiloil.org/pro)。
 
 ## 安装
 
@@ -108,7 +103,7 @@ Pro 和免费版是同一个安装包：
 
 有新版本时，Oil Find 会提示你，点「更新并重启」就行。自动检查可以在设置里关掉。
 
-安装包里带有 Pro，不激活也可以一直免费使用，区别见上面的 [Oil Find Pro](#oil-find-pro)。
+安装包里带有 Pro，无需激活即可使用，区别见上面的 [Oil Find Pro](#oil-find-pro)。
 
 卸载时退出 Oil Find，删掉「应用程序」里的 Oil Find 和 `~/Library/Application Support/Oil Find` 即可。
 
