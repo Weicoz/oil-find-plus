@@ -76,7 +76,7 @@ You can also drag results into other apps.
 
 ## Oil Find Pro
 
-The free version is open source and free forever. Pro is a closed-source paid add-on on top of it: pay once, with a 7-day free trial.
+The free version is open source and free forever. Pro is the add-on built on top of it: the upstream project ships it closed-source, paid once with a 7-day free trial, while this repository ships the full Pro functionality as open source (see below).
 
 | | Free | Pro |
 | --- | :---: | :---: |
@@ -87,7 +87,7 @@ The free version is open source and free forever. Pro is a closed-source paid ad
 | External drives stay searchable when unplugged | | ✓ |
 | Image content: text and objects in screenshots and photos | | ✓ |
 | Document content: PDF, Word, PowerPoint, Excel, Pages, Markdown and more | | ✓ |
-| Source code | Open source, MIT | Closed source |
+| Source code | Open source, MIT | Open source, MIT in this repository (closed source upstream) |
 | Price | Free | $9.99 once (¥49 in mainland China) |
 
 Pro and the free version are the same download:
