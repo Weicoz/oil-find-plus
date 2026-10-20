@@ -28,7 +28,7 @@ scripts/build-app.sh --debug
 scripts/package.sh
 ```
 
-`Pro/` 是工作区内可选的独立私有仓库，不属于本公开仓库，由 `/Pro/` 忽略规则排除。缺少私有模块时构建免费版；本机存在私有模块时可强制验证免费版：
+`Pro/` 已纳入本仓库并随仓库开源发布（`git ls-files Pro/` 可查，`.gitignore` 无 `/Pro/` 规则；上游 `oil-oil/oil-find` 没有该目录）。`Package.swift` 在缺少 `Pro/Sources/OilFindPro` 时自动只构建免费版；本机存在该模块时可用 `OILFIND_FREE=1` 强制验证免费版：
 
 ```sh
 OILFIND_FREE=1 swift build
