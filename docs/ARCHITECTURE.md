@@ -11,7 +11,7 @@
 | 内存 | 落盘平均每条目 ≤ 70 字节（含哈希表）；索引以文件映射驻留，未改写的干净文件页不计入 `phys_footprint`，常驻物理内存不随条目数线性增长 |
 | 交互 | ⇧⌘F 唤起，面板在屏幕正中，键盘即可完成全部操作 |
 
-免费核心提供文件名与路径搜索。可选私有扩展的产品能力由其独立仓库定义。
+免费核心提供文件名与路径搜索。Pro 扩展（`Pro/`）随本仓库一起开源发布，产品能力由 `ApplicationExtension` 接入。
 
 ### 不做的事
 
@@ -62,17 +62,17 @@ oil-find/
 
 ## 开放核心与应用扩展
 
-`Pro/` 是可选的独立私有仓库，不在本公开仓库内，公开 Git 通过 `/Pro/` 忽略它。manifest 用 `Context.packageDirectory` 检测私有模块目录，并通过 `Context.environment` 读取 `OILFIND_FREE=1`，决定是否加入私有 target 与其测试。没有私有模块或显式设置该变量时构建免费版；免费目标的编译标记防止旧构建缓存中的模块影响条件导入。
+`Pro/` 是本仓库内的可选扩展模块，已随仓库开源发布（`git ls-files Pro/` 可查，`.gitignore` 没有 `/Pro/` 规则）。manifest 用 `Context.packageDirectory` 检测该模块目录，并通过 `Context.environment` 读取 `OILFIND_FREE=1`，决定是否加入 Pro target 与其测试。目录不存在或显式设置该变量时构建免费版；免费目标的编译标记防止旧构建缓存中的模块影响条件导入。
 
-依赖方向是私有扩展依赖公开应用库与核心。公开库不得依赖或引用私有模块；只有 `Package.swift` 与 `Sources/OilFind/main.swift` 可以提及私有 target。入口只导入模块并调用 `Application.run`，根据构建条件传入可选扩展。
+依赖方向是 Pro 扩展依赖公开应用库与核心。公开库不得依赖或引用 Pro 模块；只有 `Package.swift` 与 `Sources/OilFind/main.swift` 可以提及 Pro target。入口只导入模块并调用 `Application.run`，根据构建条件传入可选扩展。
 
-`ApplicationExtension` 提供启动、退出、设置分区、URL、语言及额外搜索来源接口；`searchSources()` 返回来源快照，`onSearchSourcesChange` 通知来源增减、上下线与索引变动。DEBUG 下另有参数预处理方法，让扩展解析并移除自己的调试参数。应用库不理解私有功能状态。公开「外置磁盘」分区放在「索引范围」之后；扩展设置分区放在「外置磁盘」之后、「排除的文件夹」之前；语言变化即时传递，URL 交给扩展处理，无扩展时无操作。扩展只在主线程提交来源快照，功能状态判断不进入扫描或搜索热路径。
+`ApplicationExtension` 提供启动、退出、设置分区、URL、语言及额外搜索来源接口；`searchSources()` 返回来源快照，`onSearchSourcesChange` 通知来源增减、上下线与索引变动。DEBUG 下另有参数预处理方法，让扩展解析并移除自己的调试参数。应用库不理解 Pro 功能状态。公开「外置磁盘」分区放在「索引范围」之后；扩展设置分区放在「外置磁盘」之后、「排除的文件夹」之前；语言变化即时传递，URL 交给扩展处理，无扩展时无操作。扩展只在主线程提交来源快照，功能状态判断不进入扫描或搜索热路径。
 
 `ApplicationExtension.supplementarySearchProvider` 是可选的中性补充搜索接口。宿主在主线程捕获查询、选项与来源，扩展返回可并行执行的工作；补充命中只引用来源 ID 和条目 ID，并可提供延迟生成的附加说明、高亮范围与缩略图标记。名称结果先提交，补充结果按相同查询代次去重后追加；相关度排序保持已显示的名称顺序，其他排序使用相同文件键。刷新时若选中项只在补充结果中，保留当前快照直到两路搜索完成；停用提供方时立即撤下其命中。来源版本不一致和过期查询均不能提交。宿主传递来源变化与可见输入活动；公开库不解释提供方的产品状态或工作内容。
 
 `Searcher.withEntryPredicates` 为同步回调提供按输入顺序编译的条目谓词，复用名称搜索的过滤和路径规则，统一持读锁，不改变原名称搜索计划的执行顺序。结果行附加说明只在渲染时生成，缩略图在图标队列从第一帧读取并按路径与修改时间缓存。
 
-免费版验证使用 `OILFIND_FREE=1 swift build` 与按需筛选的 `swift test`。`Tests/Scripts/test_open_core.py` 检查公开 Git 未追踪 Pro 文件、代码中的私有 target 名称只出现在 manifest 和组装入口，并在 CI 执行。
+免费版验证使用 `OILFIND_FREE=1 swift build` 与按需筛选的 `swift test`。`Tests/Scripts/test_open_core.py` 检查 Pro 目录确实随仓库跟踪且未被忽略、免费版不依赖 Pro 模块（代码中的 Pro target 名称只出现在 manifest 和组装入口），并在 CI 执行。
 
 ## 索引存储 IndexStore
 
@@ -309,7 +309,7 @@ playground xcarchive dsym rtfd scptd lproj logicx band screenstudio pages number
 
 ## 应用与官网
 
-Oil Find 的公开核心与应用库使用 MIT 许可证，免费搜索始终可用。公开应用库不包含私有产品状态、设备身份或授权网络请求，可选功能通过 ApplicationExtension 接入。旧版授权清理启动时静默尽力执行一次，失败不影响免费功能。
+Oil Find 的公开核心与应用库使用 MIT 许可证，免费搜索始终可用。公开应用库不包含 Pro 产品状态、设备身份或授权网络请求，可选功能通过 ApplicationExtension 接入。旧版授权清理启动时静默尽力执行一次，失败不影响免费功能。
 
 `AppLanguage` 管理系统默认、简体中文和英文三种语言选择；语言偏好保存在 UserDefaults，`Sources/OilFindApp/L10n.swift` 是免费应用界面文案的唯一来源。语言变化通知搜索面板、菜单、欢迎页、设置及更新窗口即时重新显示文案。
 
