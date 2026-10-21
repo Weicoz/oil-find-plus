@@ -25,7 +25,7 @@ public final class UpdateClient {
         config.httpCookieStorage = nil; config.httpShouldSetCookies = false
         config.urlCredentialStorage = nil; config.urlCache = nil
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
-        config.timeoutIntervalForRequest = 30; config.timeoutIntervalForResource = 600
+        config.timeoutIntervalForRequest = request; config.timeoutIntervalForResource = resource
         config.httpAdditionalHeaders = ["User-Agent": "OilFindPlus/" + version, "Accept-Language": ""]
         return config
     }

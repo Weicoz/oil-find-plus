@@ -94,6 +94,16 @@ final class M18Tests: XCTestCase {
             XCTAssertEqual(failure, .other)
         }
     }
+    func testManifestFetchUsesItsOwnTimeout() {
+        // A hung mirror must not stall the whole check; the manifest fetch gets a short budget of
+        // its own instead of the download session's ten-minute resource timeout.
+        let manifest = UpdateClient.configuration(version: "1.0.0", request: 12, resource: 20)
+        XCTAssertEqual(manifest.timeoutIntervalForRequest, 12)
+        XCTAssertEqual(manifest.timeoutIntervalForResource, 20)
+        let download = UpdateClient.configuration(version: "1.0.0", request: 30, resource: 600)
+        XCTAssertEqual(download.timeoutIntervalForRequest, 30)
+        XCTAssertEqual(download.timeoutIntervalForResource, 600)
+    }
     private final class Files: UpdateFileOperations {
         var paths: Set<String> = ["/test/Oil Find.app"]
         var writable = true, badHash = false, failReplacement = false, failReceipt = false
