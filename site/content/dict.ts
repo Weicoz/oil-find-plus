@@ -104,7 +104,7 @@ export const dict: Record<Language, LandingCopy> = {
     today: t => `今天 ${t}`, yesterday: t => `昨天 ${t}`, date: (m, d) => `${m}月${d}日`,
     folder: '文件夹', app: '应用', bytes: n => `${n} 字节`,
     home: [
-      { icon: 'download', name: '下载 Oil Find', path: '免费开源。macOS 14 及以上，Apple 芯片', meta: updateManifest.version, meta2: '1.5 MB', act: { href: '/downloads/Oil-Find.zip' } },
+      { icon: 'download', name: '下载 Oil Find', path: '免费开源。macOS 14 及以上，Apple 芯片', meta: updateManifest.version, meta2: '2.0 MB', act: { href: '/downloads/Oil-Find.zip' } },
       { icon: 'timer', name: '每敲一个键，不到 10 毫秒', path: '85 万个文件，连续输入时只在上一次的结果里收窄', meta: '速度', act: { scroll: 'speed' } },
       { icon: 'pinyin', name: '拼音也能搜', path: '输入 <code>wd</code> 找到「文档」，输入 <code>xmwd</code> 找到「项目文档」', meta: '中文', act: { fill: 'wd' } },
       { icon: 'live', name: '文件一改，结果就变', path: '新建、改名、移动、删除，一秒内生效。关机期间的变动开机后自动补齐', meta: '实时', act: { scroll: 'speed' } },
@@ -157,7 +157,7 @@ export const dict: Record<Language, LandingCopy> = {
     date: (m, d) => `${['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][m - 1]} ${d}`,
     folder: 'Folder', app: 'App', bytes: n => `${n} bytes`,
     home: [
-      { icon: 'download', name: 'Download Oil Find', path: 'Free and open source. macOS 14 or later, Apple silicon', meta: updateManifest.version, meta2: '1.5 MB', act: { href: '/downloads/Oil-Find.zip' } },
+      { icon: 'download', name: 'Download Oil Find', path: 'Free and open source. macOS 14 or later, Apple silicon', meta: updateManifest.version, meta2: '2.0 MB', act: { href: '/downloads/Oil-Find.zip' } },
       { icon: 'timer', name: 'Under 10 ms per keystroke', path: '850,000 files. Each new letter only narrows the previous result', meta: 'Speed', act: { scroll: 'speed' } },
       { icon: 'pinyin', name: 'Pinyin search', path: 'Type <code>wd</code> to find 文档, <code>xmwd</code> to find 项目文档', meta: 'Chinese', act: { fill: 'wd' } },
       { icon: 'live', name: 'Results follow your files', path: 'Create, rename, move, delete: reflected within a second, even after a restart', meta: 'Live', act: { scroll: 'speed' } },

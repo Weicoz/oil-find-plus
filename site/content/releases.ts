@@ -9,6 +9,28 @@ export const changelogTitle = { zh: '更新日志', en: 'Changelog' };
 // The single source for the website and the packaged update manifest.
 export const releases: Release[] = [
   {
+    "version": "1.7.1-plus",
+    "date": "2026-10-21",
+    "notes": {
+      "zh": [
+        "安装包内置全部功能，无需授权码；图片识别与文档内容检索都在本机完成。",
+        "新增本地 AI 会话检索，支持 Claude Code、Codex 与 WorkBuddy，会话标题和正文都能搜到。",
+        "索引改为文件映射持有并归还堆段：索引常驻内存从 135.8 MiB 降到 1.80 MiB，应用空闲占用从 364 MB 降到 76 MB。",
+        "全盘重建改为单线程限速，重建峰值内存下降 56%（163 MB 降到 75 MB），后台重建不再抢 CPU。",
+        "冷启动直接复用索引内已落盘的哈希表，载入只需 0.15–0.26 秒，不再每次重建。",
+        "更新检查支持多个下载源自动切换，检查失败后一小时重试；更新源为本仓库的 GitHub Releases。"
+      ],
+      "en": [
+        "Every feature ships inside the installer with no licence key; image recognition and document content search run entirely on this Mac.",
+        "Added local AI conversation search for Claude Code, Codex and WorkBuddy, covering both titles and message bodies.",
+        "The index is now held as a file mapping and returns its heap sections: resident index memory dropped from 135.8 MiB to 1.80 MiB and idle app memory from 364 MB to 76 MB.",
+        "Full rebuilds run single-threaded with a rate limit, cutting the rebuild peak by 56% (163 MB to 75 MB) so background rebuilds no longer saturate the CPU.",
+        "Cold starts reuse the hash table stored inside the index file and load in 0.15–0.26 seconds instead of rebuilding it.",
+        "Update checks now switch between several download sources automatically and retry an hour after a failure. Updates come from this repository's GitHub Releases."
+      ]
+    }
+  },
+  {
     "version": "1.7.1",
     "date": "2026-10-17",
     "notes": {

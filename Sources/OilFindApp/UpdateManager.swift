@@ -20,7 +20,7 @@ final class UpdateManager: ObservableObject {
     }
     @Published private(set) var state: UpdateState = .idle
     @Published private(set) var manifest: UpdateManifest?
-    @Published var automatic: Bool { didSet { if !snapshot { preferences.automatic = automatic; schedule() } } }
+    @Published var automatic: Bool { didSet { if !snapshot { preferences.automatic = automatic; reschedule() } } }
     var onChange: (() -> Void)?
     private let preferences: UpdatePreferences
     let runningVersion: UpdateVersion
@@ -29,6 +29,7 @@ final class UpdateManager: ObservableObject {
     private var windowController: UpdateWindowController?
     private var started = false
     private var readyToRelaunch = false
+    private var retryDelay = UpdatePreferences.retryInterval
     var preventsTermination: Bool { state.installing && !readyToRelaunch }
     var canCheck: Bool {
         #if DEBUG
@@ -42,26 +43,54 @@ final class UpdateManager: ObservableObject {
         runningVersion = current
         automatic = snapshot ? true : preferences.automatic
     }
+    /// Delay before the first automatic check after launch.
+    static let launchDelay: TimeInterval = 30
     func start() {
         #if !DEBUG
-        started = true; schedule(delay: 30)
+        started = true; reschedule()
         #endif
     }
     func stop() { timer?.invalidate(); timer = nil; started = false }
-    private func schedule(delay: TimeInterval = 86_400) {
+    /// Schedules the next check from the persisted last successful one, so relaunching the app
+    /// several times a day does not ask the server again.
+    private func reschedule() { schedule(delay: max(Self.launchDelay, preferences.secondsUntilNextCheck())) }
+    private func schedule(delay: TimeInterval) {
         timer?.invalidate(); timer = nil
         guard started, automatic else { return }
         timer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
-            self?.check(manual: false); self?.schedule()
+            self?.automaticCheck()
         }
     }
+    /// Failed checks back off from one hour up to the regular daily cadence.
+    private func scheduleAfter(reached: Bool) {
+        guard reached else {
+            schedule(delay: retryDelay)
+            retryDelay = min(retryDelay * 2, UpdatePreferences.checkInterval)
+            return
+        }
+        retryDelay = UpdatePreferences.retryInterval
+        schedule(delay: UpdatePreferences.checkInterval)
+    }
+    private func automaticCheck() {
+        guard started, automatic else { return }
+        run(manual: false) { [weak self] reached in self?.scheduleAfter(reached: reached) }
+    }
     func check(manual: Bool = true) {
-        #if !DEBUG
-        guard !snapshot, !state.busy else { return }
+        run(manual: manual) { [weak self] reached in
+            guard manual else { return }
+            self?.scheduleAfter(reached: reached)
+        }
+    }
+    private func run(manual: Bool, completion: @escaping (Bool) -> Void) {
+        #if DEBUG
+        completion(false)
+        #else
+        guard !snapshot, !state.busy else { completion(false); return }
         setState(.checking)
         Task { @MainActor in
             do {
                 let latest = try await UpdateClient(version: Self.current.version.text).check()
+                preferences.recordCheck()
                 if preferences.shouldOffer(latest, current: Self.current, system: ProcessInfo.processInfo.operatingSystemVersion, manual: manual) {
                     manifest = latest; setState(.available); present()
                 } else if manual {
@@ -69,9 +98,11 @@ final class UpdateManager: ObservableObject {
                 } else {
                     setState(manifest == nil ? .idle : .available)
                 }
+                completion(true)
             } catch {
                 if manual { setState(.failed((error as? UpdateFailure) ?? .other)); present() }
                 else { setState(manifest == nil ? .idle : .available) }
+                completion(false)
             }
         }
         #endif

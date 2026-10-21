@@ -35,7 +35,7 @@ describe('updates and release notes', () => {
     expect(manifest).toMatchObject({
       version: published.version,
       published: published.date,
-      url: `https://find.oiloil.org/downloads/Oil-Find-${published.version}.zip`,
+      url: `https://github.com/Weicoz/oil-find-plus/releases/download/v${published.version}/OilFind-Plus-v${published.version}-macOS-arm64.zip`,
       notes: published.notes,
     });
     expect(manifest.size).toBeGreaterThan(0);
@@ -51,7 +51,7 @@ describe('updates and release notes', () => {
       writeFileSync(plist, info(releases[0].version)); writeFileSync(archive, 'test archive bytes');
       execFileSync(process.execPath, ['--experimental-strip-types', script, plist, archive, output], { stdio: 'pipe' });
       const manifest = JSON.parse(readFileSync(output, 'utf8'));
-      expect(manifest).toEqual({ version: releases[0].version, build: 5, url: `https://find.oiloil.org/downloads/Oil-Find-${releases[0].version}.zip`, size: 18,
+      expect(manifest).toEqual({ version: releases[0].version, build: 5, url: `https://github.com/Weicoz/oil-find-plus/releases/download/v${releases[0].version}/OilFind-Plus-v${releases[0].version}-macOS-arm64.zip`, size: 18,
         sha256: createHash('sha256').update('test archive bytes').digest('hex'), minimumSystemVersion: '14.0', published: releases[0].date, notes: releases[0].notes });
       rmSync(output); writeFileSync(plist, info('99.0.0'));
       expect(() => execFileSync(process.execPath, ['--experimental-strip-types', script, plist, archive, output], { stdio: 'pipe' })).toThrow(/Release notes for 99.0.0 are missing/);

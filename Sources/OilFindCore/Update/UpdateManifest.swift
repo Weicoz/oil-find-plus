@@ -121,6 +121,25 @@ public final class UpdatePreferences {
         get { defaults.object(forKey: "automaticUpdates") as? Bool ?? true }
         set { defaults.set(newValue, forKey: "automaticUpdates") }
     }
+    /// Interval between successful automatic checks.
+    public static let checkInterval: TimeInterval = 86_400
+    /// A failed check retries after this delay instead of waiting a whole day.
+    public static let retryInterval: TimeInterval = 3_600
+    /// The moment of the last check that reached the network. Persisted so a restart does not
+    /// re-ask immediately when the app is launched several times a day.
+    public var lastCheckAt: Date? {
+        get { (defaults.object(forKey: "lastUpdateCheck") as? Double).map(Date.init(timeIntervalSince1970:)) }
+        set {
+            if let newValue { defaults.set(newValue.timeIntervalSince1970, forKey: "lastUpdateCheck") }
+            else { defaults.removeObject(forKey: "lastUpdateCheck") }
+        }
+    }
+    public func recordCheck(_ date: Date = Date()) { lastCheckAt = date }
+    /// Seconds until the next automatic check is due. Zero means it is due now.
+    public func secondsUntilNextCheck(now: Date = Date(), interval: TimeInterval = UpdatePreferences.checkInterval) -> TimeInterval {
+        guard let last = lastCheckAt else { return 0 }
+        return max(0, interval - now.timeIntervalSince(last))
+    }
     public func skip(_ manifest: UpdateManifest) { defaults.set(manifest.version, forKey: "skippedUpdateVersion") }
     public func shouldOffer(_ manifest: UpdateManifest, current: UpdateVersion, system: OperatingSystemVersion, manual: Bool) -> Bool {
         manifest.release > current && manifest.supports(system) && (manual || defaults.string(forKey: "skippedUpdateVersion") != manifest.version)

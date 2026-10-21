@@ -2,13 +2,25 @@ import Foundation
 
 public final class UpdateClient {
     public static let latestURL = URL(string: "https://raw.githubusercontent.com/Weicoz/oil-find-plus/main/updates/latest.json")!
-    private let manifestURL: URL
+    /// Mirrors tried in order when the primary endpoint fails. raw.githubusercontent.com is often
+    /// unreachable from mainland China, so a CDN copy keeps automatic checks working there.
+    public static let mirrorURLs = [
+        URL(string: "https://cdn.jsdelivr.net/gh/Weicoz/oil-find-plus@main/updates/latest.json")!,
+        URL(string: "https://github.com/Weicoz/oil-find-plus/raw/main/updates/latest.json")!
+    ]
+    public static var defaultManifestURLs: [URL] { [latestURL] + mirrorURLs }
+    private let manifestURLs: [URL]
     private let version: String
     private let allowLocalhost: Bool
-    public init(version: String, manifestURL: URL = UpdateClient.latestURL, allowLocalhost: Bool = false) {
-        self.version = version; self.manifestURL = manifestURL; self.allowLocalhost = allowLocalhost
+    /// The endpoint that answered the last successful check, for diagnostics.
+    public private(set) var lastEndpoint: URL?
+    public init(version: String, manifestURLs: [URL] = UpdateClient.defaultManifestURLs, allowLocalhost: Bool = false) {
+        self.version = version; self.manifestURLs = manifestURLs; self.allowLocalhost = allowLocalhost
     }
-    private func configuration() -> URLSessionConfiguration {
+    public convenience init(version: String, manifestURL: URL, allowLocalhost: Bool = false) {
+        self.init(version: version, manifestURLs: [manifestURL], allowLocalhost: allowLocalhost)
+    }
+    static func configuration(version: String, request: TimeInterval, resource: TimeInterval) -> URLSessionConfiguration {
         let config = URLSessionConfiguration.ephemeral
         config.httpCookieStorage = nil; config.httpShouldSetCookies = false
         config.urlCredentialStorage = nil; config.urlCache = nil
@@ -18,8 +30,26 @@ public final class UpdateClient {
         return config
     }
     public func check() async throws -> UpdateManifest {
+        let result = try await UpdateClient.firstManifest(from: manifestURLs) { url in
+            try await self.fetchManifest(from: url)
+        }
+        lastEndpoint = result.endpoint
+        return result.manifest
+    }
+    /// Runs the per-endpoint fetch against every endpoint in order and returns the first success
+    /// with the endpoint that answered. Kept separate so the fallback order is testable offline.
+    static func firstManifest(from urls: [URL], fetch: (URL) async throws -> UpdateManifest) async throws -> (endpoint: URL, manifest: UpdateManifest) {
+        var failure = UpdateFailure.network
+        for url in urls {
+            do { return (url, try await fetch(url)) }
+            catch let error as UpdateFailure { failure = error }
+            catch { failure = .network }
+        }
+        throw failure
+    }
+    private func fetchManifest(from manifestURL: URL) async throws -> UpdateManifest {
         guard UpdateManifest.validURL(manifestURL, allowLocalhost: allowLocalhost) else { throw UpdateFailure.other }
-        let session = URLSession(configuration: configuration(), delegate: UpdateFollowRedirect(), delegateQueue: nil)
+        let session = URLSession(configuration: UpdateClient.configuration(version: version, request: 12, resource: 20), delegate: UpdateFollowRedirect(), delegateQueue: nil)
         defer { session.invalidateAndCancel() }
         let data: Data, response: URLResponse
         do { (data, response) = try await session.data(from: manifestURL) }
@@ -28,6 +58,7 @@ public final class UpdateClient {
         let manifest = try UpdateManifest.parse(data, allowLocalhost: allowLocalhost)
         let allowedHosts: Set<String> = [
             manifestURL.host ?? "",
+            "cdn.jsdelivr.net",
             "github.com",
             "api.github.com",
             "raw.githubusercontent.com",
@@ -48,7 +79,7 @@ public final class UpdateClient {
         guard UpdateManifest.validURL(manifest.url, allowLocalhost: allowLocalhost) else { throw UpdateFailure.other }
         return try await withCheckedThrowingContinuation { continuation in
             let delegate = UpdateDownload(size: manifest.size, progress: progress) { continuation.resume(with: $0) }
-            let session = URLSession(configuration: configuration(), delegate: delegate, delegateQueue: nil)
+            let session = URLSession(configuration: UpdateClient.configuration(version: self.version, request: 30, resource: 600), delegate: delegate, delegateQueue: nil)
             session.downloadTask(with: manifest.url).resume()
         }
     }

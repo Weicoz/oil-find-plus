@@ -53,6 +53,47 @@ final class M18Tests: XCTestCase {
         XCTAssertFalse(preferences.shouldOffer(try manifest(minimum: "15.0"), current: current, system: system, manual: true))
     }
 
+    func testAutomaticCheckCadenceIsPersisted() {
+        let suite = "M18-" + UUID().uuidString
+        let isolated = UserDefaults(suiteName: suite)!
+        defer { isolated.removePersistentDomain(forName: suite) }
+        let preferences = UpdatePreferences(defaults: isolated)
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        XCTAssertNil(preferences.lastCheckAt)
+        XCTAssertEqual(preferences.secondsUntilNextCheck(now: now), 0)
+        preferences.recordCheck(now)
+        XCTAssertEqual(preferences.secondsUntilNextCheck(now: now), UpdatePreferences.checkInterval)
+        XCTAssertEqual(preferences.secondsUntilNextCheck(now: now.addingTimeInterval(7_200)), 79_200)
+        XCTAssertEqual(preferences.secondsUntilNextCheck(now: now.addingTimeInterval(90_000)), 0)
+        XCTAssertEqual(UpdatePreferences.checkInterval, 86_400)
+        XCTAssertEqual(UpdatePreferences.retryInterval, 3_600)
+        XCTAssertEqual(UpdatePreferences(defaults: isolated).lastCheckAt?.timeIntervalSince1970 ?? 0, now.timeIntervalSince1970)
+        preferences.lastCheckAt = nil
+        XCTAssertNil(UpdatePreferences(defaults: isolated).lastCheckAt)
+    }
+    func testManifestEndpointsFallBackInOrder() async throws {
+        let endpoints = UpdateClient.defaultManifestURLs
+        XCTAssertEqual(endpoints.count, 3)
+        XCTAssertEqual(endpoints.first, UpdateClient.latestURL)
+        XCTAssertEqual(Set(endpoints.map { $0.host ?? "" }), ["raw.githubusercontent.com", "cdn.jsdelivr.net", "github.com"])
+        XCTAssertTrue(endpoints.allSatisfy { $0.scheme == "https" })
+        let wanted = try manifest(version: "1.4.0")
+        var tried: [URL] = []
+        let result = try await UpdateClient.firstManifest(from: endpoints) { url in
+            tried.append(url)
+            if url != endpoints[2] { throw UpdateFailure.network }
+            return wanted
+        }
+        XCTAssertEqual(tried, endpoints)
+        XCTAssertEqual(result.endpoint, endpoints[2])
+        XCTAssertEqual(result.manifest.version, "1.4.0")
+        do {
+            _ = try await UpdateClient.firstManifest(from: endpoints) { _ in throw UpdateFailure.other }
+            XCTFail("A list where every endpoint fails must throw")
+        } catch let failure as UpdateFailure {
+            XCTAssertEqual(failure, .other)
+        }
+    }
     private final class Files: UpdateFileOperations {
         var paths: Set<String> = ["/test/Oil Find.app"]
         var writable = true, badHash = false, failReplacement = false, failReceipt = false

@@ -4,46 +4,46 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$PROJECT_DIR"
 
-# Official updates always include the optional private application library.
+# Releases always bundle the Pro application library that lives in this repository.
 if [[ ! -d Pro/Sources ]]; then
-    printf '%s\n' 'Packaging requires the private Pro repository.' >&2
+    printf '%s\n' 'Packaging requires Pro/Sources in this repository.' >&2
     exit 1
 fi
 if [[ -n "${OILFIND_FREE+x}" ]]; then
     printf '%s\n' 'Packaging refuses OILFIND_FREE; unset it to include Pro.' >&2
     exit 1
 fi
-if ! python3 - <<'PYKEY'
-from pathlib import Path
-import re
-config = next(Path('Pro/Sources').glob('*/License/LicenseConfig.swift'), None)
-if config is None:
-    raise SystemExit('Packaging requires the private Pro authorization sources.')
-source = config.read_text()
-key = re.search(r'static let productionPublicKey = "([^"]*)"', source)
-if not key or not key.group(1):
-    raise SystemExit('Packaging requires the new production authorization public key (M23).')
-PYKEY
-then
-    exit 1
-fi
 
-# Every update must satisfy the preceding release's certificate requirement.
-if ! security find-identity -v -p codesigning | grep -q '"Oil Find Self-Signed"'; then
-    printf '%s\n' 'Packaging requires the existing "Oil Find Self-Signed" identity.' >&2
+"$PROJECT_DIR/scripts/build-app.sh"
+APP_PATH="$PROJECT_DIR/build/Oil Find Plus.app"
+VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Resources/Info.plist)"
+
+# In-app updates check the candidate against the running app's designated requirement, so a build
+# that is only ad-hoc signed (requirement bound to its cdhash) could never update itself.
+AUTHORITY="$(codesign -dv --verbose=2 "$APP_PATH" 2>&1 | sed -n 's/^Authority=//p' | head -1)"
+if [[ -z "$AUTHORITY" ]]; then
+    printf '%s\n' 'Packaging needs a signing identity: set OILFIND_SIGN_IDENTITY or install an Apple Development certificate.' >&2
     exit 1
 fi
-unset OILFIND_SIGN_IDENTITY
-"$PROJECT_DIR/scripts/build-app.sh"
-VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Resources/Info.plist)"
-ARCHIVE_PATH="$PROJECT_DIR/build/Oil-Find-$VERSION.zip"
-ditto -c -k --sequesterRsrc --keepParent "build/Oil Find.app" "$ARCHIVE_PATH"
-python3 Tests/Scripts/test_packaged_launch.py "$ARCHIVE_PATH"
-mkdir -p site/public/downloads site/public/updates
-node --experimental-strip-types scripts/generate-update-manifest.mjs Resources/Info.plist "$ARCHIVE_PATH" site/public/updates/latest.json
-cp "$ARCHIVE_PATH" "site/public/downloads/Oil-Find-$VERSION.zip"
+printf 'Signed by: %s\n' "$AUTHORITY"
+
+ARCHIVE_NAME="OilFind-Plus-v$VERSION-macOS-arm64.zip"
+ARCHIVE_PATH="$PROJECT_DIR/build/$ARCHIVE_NAME"
+rm -f "$ARCHIVE_PATH"
+ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$ARCHIVE_PATH"
+python3 Tests/Scripts/test_packaged_launch.py "$APP_PATH"
+
+# The app reads updates/latest.json from this repository; the website reads the site copy.
+mkdir -p updates site/public/downloads site/public/updates
+node --experimental-strip-types scripts/generate-update-manifest.mjs Resources/Info.plist "$ARCHIVE_PATH" updates/latest.json \
+    "https://github.com/Weicoz/oil-find-plus/releases/download/v$VERSION/$ARCHIVE_NAME"
+cp updates/latest.json site/public/updates/latest.json
+cp "$ARCHIVE_PATH" "site/public/downloads/$ARCHIVE_NAME"
+# The website links to this stable name.
 cp "$ARCHIVE_PATH" site/public/downloads/Oil-Find.zip
 
 printf 'File: %s\n' "$ARCHIVE_PATH"
 printf 'Size: %s bytes\n' "$(stat -f '%z' "$ARCHIVE_PATH")"
 printf 'SHA-256: %s\n' "$(shasum -a 256 "$ARCHIVE_PATH" | cut -d ' ' -f 1)"
+printf 'Tag: v%s\n' "$VERSION"
+printf 'Publish: gh release create v%s "%s" --title "Oil Find Plus %s"\n' "$VERSION" "$ARCHIVE_PATH" "$VERSION"

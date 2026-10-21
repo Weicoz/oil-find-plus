@@ -1,27 +1,27 @@
 {
-  "version": "1.6.2",
-  "build": 14,
-  "url": "https://github.com/Weicoz/oil-find-plus/releases/download/v1.6.2-plus/OilFind-Plus-v1.6.2-plus-macOS-arm64.zip",
-  "size": 1711714,
-  "sha256": "90ad006409dda800425ad4565f72fd451de3a2ac2f47cd2d661905485be3a323",
+  "version": "1.7.1-plus",
+  "build": 16,
+  "url": "https://github.com/Weicoz/oil-find-plus/releases/download/v1.7.1-plus/OilFind-Plus-v1.7.1-plus-macOS-arm64.zip",
+  "size": 2046952,
+  "sha256": "6a3f9b44274b1bdc10c821737c94a8f98d1ff3ea523e48ed4e99e0f61c04c3a2",
   "minimumSystemVersion": "14.0",
-  "published": "2026-10-14",
+  "published": "2026-10-21",
   "notes": {
     "zh": [
-      "集成 Pro 全功能开源（PDF/Word/RTF/Markdown 等全文内容检索）",
-      "集成 Apple Vision 图像 OCR 离线文字秒级检索",
-      "全盘扫描支持与机器资产/构建缓存智能降噪",
-      "能效核心（E-Cores）低能耗调度与 80ms 动态休眠，彻底消除发热",
-      "FTS5 SQLite 批量事务提交，杜绝数据库与 WAL 体积膨胀",
-      "修复索引变动引发的界面列表闪烁"
+      "安装包内置全部功能，无需授权码；图片识别与文档内容检索都在本机完成。",
+      "新增本地 AI 会话检索，支持 Claude Code、Codex 与 WorkBuddy，会话标题和正文都能搜到。",
+      "索引改为文件映射持有并归还堆段：索引常驻内存从 135.8 MiB 降到 1.80 MiB，应用空闲占用从 364 MB 降到 76 MB。",
+      "全盘重建改为单线程限速，重建峰值内存下降 56%（163 MB 降到 75 MB），后台重建不再抢 CPU。",
+      "冷启动直接复用索引内已落盘的哈希表，载入只需 0.15–0.26 秒，不再每次重建。",
+      "更新检查支持多个下载源自动切换，检查失败后一小时重试；更新源为本仓库的 GitHub Releases。"
     ],
     "en": [
-      "Fully integrated Pro features open source (full-text search for PDF, Word, RTF, Markdown, etc.)",
-      "Apple Vision offline image OCR text retrieval",
-      "Full-disk coverage with smart exclusions for machine assets and build caches",
-      "Energy-efficient scheduling on E-cores with 80ms sleep to eliminate heating",
-      "SQLite FTS5 batch transaction commits to prevent disk bloating",
-      "Anti-flicker debouncing for live index updates"
+      "Every feature ships inside the installer with no licence key; image recognition and document content search run entirely on this Mac.",
+      "Added local AI conversation search for Claude Code, Codex and WorkBuddy, covering both titles and message bodies.",
+      "The index is now held as a file mapping and returns its heap sections: resident index memory dropped from 135.8 MiB to 1.80 MiB and idle app memory from 364 MB to 76 MB.",
+      "Full rebuilds run single-threaded with a rate limit, cutting the rebuild peak by 56% (163 MB to 75 MB) so background rebuilds no longer saturate the CPU.",
+      "Cold starts reuse the hash table stored inside the index file and load in 0.15–0.26 seconds instead of rebuilding it.",
+      "Update checks now switch between several download sources automatically and retry an hour after a failure. Updates come from this repository's GitHub Releases."
     ]
   }
 }
