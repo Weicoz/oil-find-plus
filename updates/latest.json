@@ -2,8 +2,8 @@
   "version": "1.7.1-plus",
   "build": 16,
   "url": "https://github.com/Weicoz/oil-find-plus/releases/download/v1.7.1-plus/OilFind-Plus-v1.7.1-plus-macOS-arm64.zip",
-  "size": 2046952,
-  "sha256": "6a3f9b44274b1bdc10c821737c94a8f98d1ff3ea523e48ed4e99e0f61c04c3a2",
+  "size": 2046904,
+  "sha256": "c0e8eaa3f739a5d85c21715692f65482ba28b479ed8f8f5e50b120739bf7e922",
   "minimumSystemVersion": "14.0",
   "published": "2026-10-21",
   "notes": {
