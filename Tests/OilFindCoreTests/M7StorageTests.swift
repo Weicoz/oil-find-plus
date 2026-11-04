@@ -314,7 +314,13 @@ final class M7StorageTests: XCTestCase {
             let tableOffset = IndexStore.fileLayout(rootLen: store.rootPath.utf8.count, capacities: capacities).offsets[IndexStore.Section.table.rawValue]
             var data = try Data(contentsOf: url)
             func slot(_ index: Int) -> UInt32 {
-                (0..<4).reduce(UInt32(0)) { $0 | UInt32(data[tableOffset + index * 4 + $1]) << UInt32($1 * 8) }
+                var value: UInt32 = 0
+                for byte in 0..<4 {
+                    let position: Int = tableOffset + index * 4 + byte
+                    let part: UInt32 = UInt32(data[position])
+                    value |= part << UInt32(byte * 8)
+                }
+                return value
             }
             // 找出前两个非空槽，把第二个改成与第一个重复 → 必有一个条目再也查不到。
             var filled: [Int] = []
