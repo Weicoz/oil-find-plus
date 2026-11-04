@@ -41,8 +41,10 @@ final class M7LiveTests: XCTestCase {
             return out
         }
     }
+    /// 这些用例等待后台扫描线程，全量并行跑时会被别的 target 抢走 CPU，所以预算放宽到 20 秒；
+    /// 断言消息里带上 starts/state，真出问题能直接看出是「没开始」还是「没等到」。
     @discardableResult private func eventually(_ predicate: () -> Bool) -> Bool {
-        let deadline = Date().addingTimeInterval(5)
+        let deadline = Date().addingTimeInterval(20)
         repeat {
             if predicate() { return true }
             RunLoop.current.run(until: Date().addingTimeInterval(0.01))
@@ -212,15 +214,21 @@ final class M7LiveTests: XCTestCase {
             }
         }
         manager.rescan()
-        XCTAssertTrue(eventually { scannedRoot.wait(timeout: .now()) == .success })
+        let rootScanned = eventually { scannedRoot.wait(timeout: .now()) == .success }
+        countLock.lock(); let startsSoFar = starts; countLock.unlock()
+        XCTAssertTrue(rootScanned, "首次重扫未等到根目录完成：starts=\(startsSoFar) state=\(manager.state) rescanning=\(manager.isRescanning)")
         try f.file("overflow.txt")
         manager.injectEvents(f.events(["overflow.txt"], id: FSWatcher.currentEventId() + 1), mustRescanAll: false)
         _ = manager.watcherEpochForTesting
         resume.signal()
-        XCTAssertTrue(eventually {
+        // At least one recovery rescan must follow the requested one. Real host events may add more,
+        // so the count is a lower bound; the indexed file below is the real proof.
+        let recovered = eventually {
             countLock.lock(); let count = starts; countLock.unlock()
-            return count == 2 && !manager.isRescanning
-        })
+            return count >= 2 && !manager.isRescanning
+        }
+        countLock.lock(); let startsAfter = starts; countLock.unlock()
+        XCTAssertTrue(recovered, "缓冲溢出未排队恢复重扫：starts=\(startsAfter) state=\(manager.state) rescanning=\(manager.isRescanning)")
         XCTAssertEqual(Searcher.search(Query.parse("regex:^overflow[.]txt$"), in: try XCTUnwrap(manager.store))?.total, 1)
     }
     func testLiveLossSchedulingGapCannotAdvanceSavedCursorBeforeScannerStarts() throws {
@@ -229,23 +237,30 @@ final class M7LiveTests: XCTestCase {
         manager.start(); defer { manager.stop() }
         XCTAssertTrue(eventually { manager.state == .ready })
         _ = manager.watcherEpochForTesting
-        let old = try XCTUnwrap(manager.store), safeCursor = old.read { old.lastEventId }
+        let old = try XCTUnwrap(manager.store)
+        // 真实主机事件可能在注入之前到达并被正常应用，所以基准是「损失被处理那一刻」的游标。
+        // 损失一旦处理，后续事件只进缓冲；此后再前进才是要挡的调度缺口。
+        let countLock = NSLock(); var frozen = old.read { old.lastEventId }
         let beforeScan = DispatchSemaphore(value: 0), resume = DispatchSemaphore(value: 0)
         defer { resume.signal() }
         manager.onRescanStart = { [weak manager] in
-            manager?.injectEvents(f.events(["before.txt"], id: safeCursor + 10_000), mustRescanAll: false)
+            let cursor = old.read { old.lastEventId }
+            countLock.lock(); frozen = cursor; countLock.unlock()
+            manager?.injectEvents(f.events(["before.txt"], id: cursor + 10_000), mustRescanAll: false)
         }
         manager.onScannerCreated = { _ in
-            XCTAssertEqual(old.read { old.lastEventId }, safeCursor)
+            countLock.lock(); let cursor = frozen; countLock.unlock()
+            XCTAssertEqual(old.read { old.lastEventId }, cursor)
             beforeScan.signal(); _ = resume.wait(timeout: .now() + 5)
         }
         // 内核丢失不能回放补齐，必定排队整盘重建，才能考察重建开始前的游标。
-        manager.injectEvents(f.events([""], flags: UInt32(kFSEventStreamEventFlagMustScanSubDirs | kFSEventStreamEventFlagKernelDropped), id: safeCursor + 1), mustRescanAll: true)
+        manager.injectEvents(f.events([""], flags: UInt32(kFSEventStreamEventFlagMustScanSubDirs | kFSEventStreamEventFlagKernelDropped), id: old.read { old.lastEventId } + 1), mustRescanAll: true)
         XCTAssertTrue(eventually { beforeScan.wait(timeout: .now()) == .success })
-        XCTAssertEqual(old.read { old.lastEventId }, safeCursor)
+        countLock.lock(); let expected = frozen; countLock.unlock()
+        XCTAssertEqual(old.read { old.lastEventId }, expected)
         manager.saveNow(); manager.stop()
         let saved = try XCTUnwrap(IndexStore.load(from: f.db.path))
-        XCTAssertEqual(saved.lastEventId, safeCursor)
+        XCTAssertEqual(saved.lastEventId, expected)
         resume.signal()
     }
     func testRotatedFSEventsUUIDIsAdoptedOnlyAfterCursorPassesObservation() throws {

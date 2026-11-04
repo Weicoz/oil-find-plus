@@ -21,6 +21,15 @@ final class M6Tests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         try body(root)
     }
+    // 迁移保存要写盘并 fsync，再重新映射回来；并行跑整个测试套件时磁盘繁忙，5 秒会偶发不够。
+    func eventually(_ body: () -> Bool) -> Bool {
+        let deadline = Date().addingTimeInterval(20)
+        repeat {
+            if body() { return true }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.002))
+        } while Date() < deadline
+        return body()
+    }
     func testT53ScopeRulesFingerprintsAndPreferences() throws {
         let home = NSHomeDirectory(), base = IndexConfig.standard()
         let switches: [WritableKeyPath<IndexConfig, Bool>] = [\.indexDependencyDirs, \.indexPackageContents, \.indexUserLibrary, \.indexSystemDirs]
@@ -179,16 +188,11 @@ final class M6Tests: XCTestCase {
         try withTree { root in
             try Data([65]).write(to: root.appendingPathComponent("readme.txt"))
             var config = IndexConfig.standard(); config.rootPath = root.path
-            let db = root.appendingPathComponent("index.oilfind")
-            // 迁移保存要写盘并 fsync，再重新映射回来；并行跑整个测试套件时磁盘繁忙，5 秒会偶发不够。
-            func eventually(_ body: () -> Bool) -> Bool {
-                let deadline = Date().addingTimeInterval(20)
-                repeat {
-                    if body() { return true }
-                    RunLoop.current.run(until: Date().addingTimeInterval(0.002))
-                } while Date() < deadline
-                return body()
-            }
+            // 索引文件不能放在被扫描目录里：保存自身会不断产生文件事件，接管就永远等不到索引安静。
+            let storage = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop/OilFindM6Store-\(UUID().uuidString)")
+            try FileManager.default.createDirectory(at: storage, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: storage) }
+            let db = storage.appendingPathComponent("index.oilfind")
             let first = IndexManager(config: config, dbURL: db)
             first.start()
             XCTAssertTrue(eventually { first.state == .ready }); first.stop()
@@ -206,7 +210,7 @@ final class M6Tests: XCTestCase {
             second.stop()
             wait(for: [noBuild], timeout: 1)
             // 旧格式（v3）文件不带哈希表：建表排在后台，建表完成前也必须能搜索。
-            let legacyDb = root.appendingPathComponent("legacy.oilfind")
+            let legacyDb = storage.appendingPathComponent("legacy.oilfind")
             try writeLegacyV3File(try XCTUnwrap(IndexStore.load(from: db.path)), to: legacyDb)
             XCTAssertNotNil(IndexStore.load(from: legacyDb.path))
             let blocked = DispatchSemaphore(value: 0), started = expectation(description: "loaded hash build queued")
@@ -228,6 +232,31 @@ final class M6Tests: XCTestCase {
             XCTAssertGreaterThanOrEqual(loaded.read { loaded.version }, version)
             XCTAssertTrue(loaded.read { loaded.hashReady })
             third.stop()
+        }
+    }
+    // 索引文件位于被扫描目录内（开启 indexUserLibrary 时的真实布局）也必须完成接管：
+    // 保存自身产生的事件是索引产物，不得回灌给 updater，否则索引永远不安静。
+    func testT58IndexInsideScannedRootStillAdoptsMapping() throws {
+        try skipIfCI("Adoption timing depends on host file events.")
+        try withTree { root in
+            try Data([65]).write(to: root.appendingPathComponent("readme.txt"))
+            var config = IndexConfig.standard(); config.rootPath = root.path
+            let db = root.appendingPathComponent("index.oilfind")
+            let first = IndexManager(config: config, dbURL: db)
+            first.start()
+            XCTAssertTrue(eventually { first.state == .ready }); first.stop()
+            XCTAssertTrue(eventually { IndexStore.load(from: db.path)?.isFileBacked == true })
+            // 无哈希表的 v3 文件必须先落盘再被接管；db 与 tmp 兄弟文件都在被扫描目录里。
+            let legacyDb = root.appendingPathComponent("legacy.oilfind")
+            try writeLegacyV3File(try XCTUnwrap(IndexStore.load(from: db.path)), to: legacyDb)
+            XCTAssertNotNil(IndexStore.load(from: legacyDb.path))
+            let second = IndexManager(config: config, dbURL: legacyDb)
+            second.start(); defer { second.stop() }
+            XCTAssertTrue(eventually { second.state == .ready })
+            let loaded = try XCTUnwrap(second.store)
+            XCTAssertTrue(eventually { loaded.isFileBacked })
+            XCTAssertTrue(loaded.read { loaded.hashReady })
+            XCTAssertEqual(Searcher.search(Query.parse("readme"), in: loaded)?.total, 1)
         }
     }
 

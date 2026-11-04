@@ -11,6 +11,10 @@ public final class IndexManager {
     private let settingsDefaults: UserDefaults?
     private var offline = false
     private let dbURL: URL
+    /// 索引自身的落盘产物（db 与 db.tmp.<pid>）不参与更新。保存会立刻产生文件事件，
+    /// 若回灌给 updater，接管就永远等不到索引安静：保存→事件→改动→再保存的反馈环。
+    /// FSEvents 对 /var、/tmp 报 /private 前缀，所以两种写法都登记。
+    private let indexArtifactPrefixes: [String]
     private let volumeUUID: String?
     private let lock = NSLock()
     private let eventQueue = DispatchQueue(label: "com.oiloil.find.events", qos: .utility)
@@ -96,6 +100,11 @@ public final class IndexManager {
     }()
     public init(config: IndexConfig, dbURL: URL, volumeUUID: String? = nil, settingsDefaults: UserDefaults? = .standard) {
         self.config = config; self.dbURL = dbURL; self.volumeUUID = volumeUUID
+        let artifact = dbURL.standardizedFileURL.path
+        var prefixes = [artifact]
+        if artifact.hasPrefix("/private/") { prefixes.append(String(artifact.dropFirst("/private".count))) }
+        else if artifact.hasPrefix("/var/") || artifact.hasPrefix("/tmp/") { prefixes.append("/private" + artifact) }
+        self.indexArtifactPrefixes = prefixes
         self.settingsDefaults = settingsDefaults
         if let values = settingsDefaults?.stringArray(forKey: "excludedExtensions") { self.config.excludedExtensions = Set(values) }
         eventQueue.setSpecific(key: eventKey, value: true); saveQueue.setSpecific(key: saveKey, value: true)
@@ -401,6 +410,9 @@ public final class IndexManager {
             #endif
             return
         }
+        // 索引文件放在被扫描目录内时（例如开启 indexUserLibrary），保存自身会持续产生事件。
+        // 这些事件不是外部改动，回灌会让索引永远不安静，接管与内存归还都停摆。
+        let changes = changes.filter { !isIndexArtifact($0.path) }
         if mustRescanAll {
             let flags = changes.reduce(UInt32(0)) { $0 | $1.flags }
             Self.log.notice("fsevents loss signal: events=\(changes.count) flags=\(String(flags, radix: 16), privacy: .public) buffering=\(self.bufferingToken != nil)")
@@ -440,6 +452,12 @@ public final class IndexManager {
             guard let self, self.locked({ self.active }) else { return }
             self.receiveEvents(changes, mustRescanAll: mustRescanAll, token: self.locked { self.generation }, epoch: watcherEpoch ?? self.watcherEpoch)
         }
+    }
+    private func isIndexArtifact(_ path: String) -> Bool {
+        for prefix in indexArtifactPrefixes where path.hasPrefix(prefix) {
+            if path.count == prefix.count || path.hasPrefix(prefix + ".tmp.") { return true }
+        }
+        return false
     }
     private func handleEvents(_ changes: [FSChange], mustRescanAll: Bool) {
         if mustRescanAll {
