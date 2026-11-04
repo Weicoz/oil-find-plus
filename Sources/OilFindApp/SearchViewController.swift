@@ -53,10 +53,18 @@ final class SearchViewController: NSViewController, NSWindowDelegate, NSMenuDele
             if isViewLoaded { additionalChanged() }
         }
     }
+    private var additionalCategories: [AdditionalSearchCategory] = []
+    /// nil while a file-type filter is active: the provider then contributes every category.
+    private var selectedAdditionalCategory: AdditionalSearchCategory? {
+        guard let index = filters.additionalIndex, additionalCategories.indices.contains(index) else { return nil }
+        return additionalCategories[index]
+    }
     private func refreshAdditionalFilter() {
         guard isViewLoaded else { return }
-        filters.additionalTitle = additionalSearchProvider?.isEnabled == true ? additionalSearchProvider?.title : nil
-        searchField.placeholder = filters.additionalSelected ? additionalSearchProvider?.placeholder : nil
+        let provider = additionalSearchProvider
+        additionalCategories = provider?.isEnabled == true ? (provider?.categories ?? []) : []
+        filters.additionalTitles = additionalCategories.map(\.title)
+        searchField.placeholder = filters.additionalSelected ? (selectedAdditionalCategory?.placeholder ?? provider?.placeholder) : nil
     }
     private func additionalChanged() {
         refreshAdditionalFilter()
@@ -279,7 +287,8 @@ final class SearchViewController: NSViewController, NSWindowDelegate, NSMenuDele
         let cancelled = { [generation] in !generation.current(token) }
         let supplementary = filters.additionalSelected ? nil : supplementaryProvider?.prepareSearch(query, options: options, sources: sources, isCancelled: cancelled)
         let additional = additionalSearchProvider.flatMap { provider in
-            provider.isEnabled && (filters.additionalSelected || options.kind == nil) ? provider.prepareSearch(query, isCancelled: cancelled) : nil
+            provider.isEnabled && (filters.additionalSelected || options.kind == nil)
+                ? provider.prepareSearch(query, category: filters.additionalSelected ? selectedAdditionalCategory : nil, isCancelled: cancelled) : nil
         }
         additionalSearchFailed = false
         additionalPending = additional != nil
@@ -430,7 +439,7 @@ final class SearchViewController: NSViewController, NSWindowDelegate, NSMenuDele
             footer.text = L10n.text("footer.indexing", Presentation.countText(1_234_567)); return
         }
         if additionalOnly || additionalSearchProvider?.isEnabled == true {
-            if additionalOnly { filters.select(FilterBar.names.count, notify: false); refreshAdditionalFilter() }
+            if additionalOnly { refreshAdditionalFilter(); filters.select(FilterBar.names.count, notify: false) }
             _ = generation.next(); pendingNewSearch = nil
             let query = Query.parse(searchField.text, store: store)
             let sources = additionalOnly ? [] : store.map { [SearchSource(id: "startup", displayName: "", isOnline: true, store: $0)] + additionalSources } ?? additionalSources
@@ -441,7 +450,8 @@ final class SearchViewController: NSViewController, NSWindowDelegate, NSMenuDele
                 files = hits.isEmpty ? SearchPresentation(found) : SearchPresentation(found).supplement(hits, options: options)
             } else { throw SnapshotError.failed("Cannot search snapshot index") }
             let began = CFAbsoluteTimeGetCurrent()
-            let items = additionalOnly || options.kind == nil ? try additionalSearchProvider?.prepareSearch(query, isCancelled: { false })() ?? [] : []
+            let items = additionalOnly || options.kind == nil
+                ? try additionalSearchProvider?.prepareSearch(query, category: additionalOnly ? selectedAdditionalCategory : nil, isCancelled: { false })() ?? [] : []
             diagnostics = query.diagnostics; present(files.including(items, options: options, elapsedMs: (CFAbsoluteTimeGetCurrent() - began) * 1000), selection: selection); return
         }
         if let store, let supplementaryProvider {
@@ -580,7 +590,7 @@ final class SearchViewController: NSViewController, NSWindowDelegate, NSMenuDele
         guard additionalSearchProvider?.isEnabled == true, pendingNewSearch == nil else { return }
         action.perform { [weak self] success in
             guard let self else { return }
-            if success { if action.kind == .open { self.hidePanel?() } }
+            if success { if action.kind.dismissesPanel { self.hidePanel?() } }
             else { self.footer.warning = true; self.footer.text = L10n.text("search.actionFailed") }
         }
     }

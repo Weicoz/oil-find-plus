@@ -34,6 +34,7 @@ private struct TopicSearchCacheKey: Hashable {
     let provider: String?
     let providers: [String]?
     let limit: Int
+    let includeAutomated: Bool
 }
 
 private struct CachedTopicSearch {
@@ -59,6 +60,8 @@ private final class CachedTopicDocument {
 public final class AITopicIndex {
     let sql: AITopicSQL
     private let readOnly: Bool
+    /// Old index files gain this column only when a writable connection opens; readers treat absence as 0.
+    private let hasAutomatedColumn: Bool
     private var inTransaction = false
     private var dirty = Set<Int64>()
     private var dirtyRows: [Int64: Set<Int64>] = [:]
@@ -91,9 +94,11 @@ public final class AITopicIndex {
         if readOnly {
             incremental = try sql.tables().contains("topic_chunks")
             if incremental { chunkSummaries = try sql.columns("topic_chunks").contains("fully_live") }
+            hasAutomatedColumn = try sql.columns("topics").contains("automated")
             return
         }
         incremental = true
+        hasAutomatedColumn = true
         try sql.run("""
             PRAGMA journal_mode=WAL;
             PRAGMA synchronous=NORMAL;
@@ -103,7 +108,8 @@ public final class AITopicIndex {
                 pk INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
                 session TEXT NOT NULL, provider TEXT NOT NULL, title TEXT NOT NULL,
                 project TEXT NOT NULL, modified REAL NOT NULL, desktop TEXT NOT NULL,
-                transcript TEXT NOT NULL, archived INTEGER NOT NULL, excerpt TEXT NOT NULL);
+                transcript TEXT NOT NULL, archived INTEGER NOT NULL, excerpt TEXT NOT NULL,
+                automated INTEGER NOT NULL DEFAULT 0);
             CREATE INDEX IF NOT EXISTS topics_recent ON topics(modified DESC,id);
             CREATE TABLE IF NOT EXISTS messages(
                 rowid INTEGER PRIMARY KEY, topic INTEGER NOT NULL REFERENCES topics(pk) ON DELETE CASCADE,
@@ -144,6 +150,7 @@ public final class AITopicIndex {
                 DELETE FROM topic_chunk_fts WHERE rowid=old.id;
             END;
             """)
+        if try !sql.columns("topics").contains("automated") { try sql.run("ALTER TABLE topics ADD COLUMN automated INTEGER NOT NULL DEFAULT 0") }
         if try !sql.columns("topic_docs").contains("revision") { try sql.run("ALTER TABLE topic_docs ADD COLUMN revision INTEGER NOT NULL DEFAULT 1") }
         if try !sql.columns("topic_docs").contains("base_revision") {
             try sql.run("ALTER TABLE topic_docs ADD COLUMN base_revision INTEGER NOT NULL DEFAULT 1; UPDATE topic_docs SET base_revision=revision")
@@ -317,14 +324,15 @@ public final class AITopicIndex {
     func upsert(_ topic: AITopic) throws {
         try transaction {
             let s = try statement("""
-                INSERT INTO topics(id,session,provider,title,project,modified,desktop,transcript,archived,excerpt)
-                VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
+                INSERT INTO topics(id,session,provider,title,project,modified,desktop,transcript,archived,excerpt,automated)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
                 title=excluded.title,project=excluded.project,modified=excluded.modified,desktop=excluded.desktop,
-                transcript=excluded.transcript,archived=excluded.archived,excerpt=excluded.excerpt
+                transcript=excluded.transcript,archived=excluded.archived,excerpt=excluded.excerpt,automated=excluded.automated
                 WHERE title!=excluded.title OR project!=excluded.project OR modified!=excluded.modified OR desktop!=excluded.desktop
                    OR transcript!=excluded.transcript OR archived!=excluded.archived OR excerpt!=excluded.excerpt
+                   OR automated!=excluded.automated
                 """)
-            s.bind([topic.key, topic.id, topic.provider.rawValue, topic.title, topic.project, String(topic.modified), topic.desktopID, topic.transcript, topic.archived ? "1" : "0", topic.excerpt]); _ = try s.next()
+            s.bind([topic.key, topic.id, topic.provider.rawValue, topic.title, topic.project, String(topic.modified), topic.desktopID, topic.transcript, topic.archived ? "1" : "0", topic.excerpt, topic.automated ? "1" : "0"]); _ = try s.next()
             try message(topic.key, key: "meta", body: topic.title + "\n" + topic.project)
         }
     }
@@ -352,7 +360,7 @@ public final class AITopicIndex {
     func topic(_ key: String) throws -> AITopic? {
         guard let separator = key.firstIndex(of: ":"),
               AITopicProvider(rawValue: String(key[..<separator])) != nil else { return nil }
-        let s = try statement("SELECT session,provider,title,project,modified,desktop,transcript,archived,excerpt FROM topics WHERE id=?"); s.bind([key])
+        let s = try statement("SELECT session,provider,title,project,modified,desktop,transcript,archived,excerpt," + (hasAutomatedColumn ? "automated" : "0") + " FROM topics WHERE id=?"); s.bind([key])
         defer { sqlite3_reset(s.handle) }
         return try s.next() ? Self.topic(s) : nil
     }
@@ -396,7 +404,7 @@ public final class AITopicIndex {
         }
     }
     private static func topic(_ s: AITopicStatement) -> AITopic {
-        AITopic(id: s.text(0), provider: AITopicProvider(rawValue: s.text(1))!, title: s.text(2), project: s.text(3), modified: s.double(4), desktopID: s.text(5), transcript: s.text(6), archived: s.int(7) != 0, excerpt: s.text(8))
+        AITopic(id: s.text(0), provider: AITopicProvider(rawValue: s.text(1))!, title: s.text(2), project: s.text(3), modified: s.double(4), desktopID: s.text(5), transcript: s.text(6), archived: s.int(7) != 0, excerpt: s.text(8), automated: s.int(9) != 0)
     }
     func cursor(_ path: String) throws -> (identity: String, offset: Int64)? {
         let s = try statement("SELECT identity,offset FROM topic_cursors WHERE path=?"); s.bind([path])
@@ -511,10 +519,11 @@ public final class AITopicIndex {
             return UnsafeRawPointer(bytes.baseAddress!).distance(to: match)
         }
     }
-    public func count(providers: Set<AITopicProvider>? = nil) throws -> Int {
+    public func count(providers: Set<AITopicProvider>? = nil, includeAutomated: Bool = false) throws -> Int {
         let values = (providers ?? Set(AITopicProvider.allCases)).sorted { $0.rawValue < $1.rawValue }
         if values.isEmpty { return 0 }
         let filter = " AND provider IN (" + Array(repeating: "?", count: values.count).joined(separator: ",") + ")"
+            + (hasAutomatedColumn && !includeAutomated ? " AND automated=0" : "")
         let statement = try sql.prepare("SELECT count(*) FROM topics WHERE archived=0" + filter)
         statement.bind(values.map(\.rawValue))
         guard try statement.next() else { return 0 }
@@ -611,7 +620,7 @@ public final class AITopicIndex {
         return (matches.allSatisfy { $0 }, excerpt)
     }
 
-    public func search(_ query: String, provider: AITopicProvider? = nil, providers: Set<AITopicProvider>? = nil, limit requestedLimit: Int = 100, isCancelled: @escaping () -> Bool = { false }) throws -> AITopicSearchResult {
+    public func search(_ query: String, provider: AITopicProvider? = nil, providers: Set<AITopicProvider>? = nil, limit requestedLimit: Int = 100, includeAutomated: Bool = false, isCancelled: @escaping () -> Bool = { false }) throws -> AITopicSearchResult {
         let began = CFAbsoluteTimeGetCurrent(), limit = max(1, requestedLimit)
         lastSearchStats = (0, 0); cacheHits = 0; resultCacheHits = 0; lastVerifiedMessageRanges = 0
         func result(_ topics: [AITopic], _ more: Bool = false) -> AITopicSearchResult { .init(topics: topics, hasMore: more, elapsedMs: (CFAbsoluteTimeGetCurrent() - began) * 1000) }
@@ -626,7 +635,7 @@ public final class AITopicIndex {
         if cacheEpoch?.version != version || cacheEpoch?.changes != changes {
             try pruneDocuments(); cacheEpoch = (version, changes)
         }
-        let cacheKey = TopicSearchCacheKey(terms: terms, provider: provider?.rawValue, providers: providers.map { $0.map(\.rawValue).sorted() }, limit: limit)
+        let cacheKey = TopicSearchCacheKey(terms: terms, provider: provider?.rawValue, providers: providers.map { $0.map(\.rawValue).sorted() }, limit: limit, includeAutomated: includeAutomated)
         if let cached = cachedSearches.first, cached.version != version || cached.changes != changes {
             cachedSearches.removeAll(keepingCapacity: true); searchCacheBytes = 0
         }
@@ -656,6 +665,7 @@ public final class AITopicIndex {
         let knownProviders = AITopicProvider.allCases.sorted { $0.rawValue < $1.rawValue }
         var bindings: [String] = knownProviders.map(\.rawValue)
         var conditions: [String] = ["t.archived=0", "t.provider IN (" + Array(repeating: "?", count: knownProviders.count).joined(separator: ",") + ")"]
+        if hasAutomatedColumn && !includeAutomated { conditions.append("t.automated=0") }
         if !terms.isEmpty {
             if incremental {
                 // Terms may occur in different chunks. Intersect topic identities per term,
@@ -685,13 +695,14 @@ public final class AITopicIndex {
         defer { statements.values.forEach { sqlite3_reset($0.handle) }; sqlite3_progress_handler(sql.db, 0, nil, nil); withExtendedLifetime(cancellation) {} }
         do {
             let state = incremental ? "d.base_revision,EXISTS(SELECT 1 FROM topic_chunks c WHERE c.topic=t.pk) OR EXISTS(SELECT 1 FROM topic_overrides o WHERE o.topic=t.pk)" : "d.revision,0"
-            let s = try sql.prepare("SELECT t.session,t.provider,t.title,t.project,t.modified,t.desktop,t.transcript,t.archived,t.excerpt,t.pk," + state + ",d.bytes,(SELECT rowid FROM messages WHERE topic=t.pk AND key='meta') FROM topics t JOIN topic_docs d ON d.topic=t.pk" + selection + " ORDER BY t.modified DESC,t.id")
+            let automated = hasAutomatedColumn ? "t.automated" : "0"
+            let s = try sql.prepare("SELECT t.session,t.provider,t.title,t.project,t.modified,t.desktop,t.transcript,t.archived,t.excerpt," + automated + ",t.pk," + state + ",d.bytes,(SELECT rowid FROM messages WHERE topic=t.pk AND key='meta') FROM topics t JOIN topic_docs d ON d.topic=t.pk" + selection + " ORDER BY t.modified DESC,t.id")
             s.bind(bindings); var topics: [AITopic] = []
             while try s.next() {
                 if isCancelled() { return result([]) }; lastSearchStats.candidates += 1
                 var excerpt: (row: Int64, offset: Int)?
                 if !needles.isEmpty {
-                    let match = try literalMatch(s.int(9), revision: s.int(10), baseBytes: Int(s.int(12)), meta: s.int(13) == 0 ? nil : s.int(13), edited: s.int(11) != 0, needles: needles, isCancelled: isCancelled)
+                    let match = try literalMatch(s.int(10), revision: s.int(11), baseBytes: Int(s.int(13)), meta: s.int(14) == 0 ? nil : s.int(14), edited: s.int(12) != 0, needles: needles, isCancelled: isCancelled)
                     if !match.matched { continue }; excerpt = match.excerpt
                 }
                 if topics.count == limit { return completed(topics, true) }

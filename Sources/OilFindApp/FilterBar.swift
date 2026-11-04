@@ -9,15 +9,35 @@ final class FilterBar: FlippedView, NSMenuDelegate {
         NSColor.controlAccentColor.withAlphaComponent(Theme.dark(view) ? 0.26 : 0.15)
     }
     private var laidOut = false
-    private(set) var additionalSelected = false
-    var additionalTitle: String? {
+    /// Index into `additionalTitles`; nil means one of the fixed file-type filters.
+    private(set) var additionalIndex: Int?
+    var additionalSelected: Bool { additionalIndex != nil }
+    var additionalTitle: String? { additionalTitles.first }
+    /// Provider-owned filters after the fixed file types; empty when no provider is enabled.
+    var additionalTitles: [String] = [] {
         didSet {
-            guard additionalTitle != oldValue else { return }
-            if additionalTitle == nil { additionalSelected = false }
-            buttons.last?.title = additionalTitle ?? ""
-            buttons.last?.isHidden = additionalTitle == nil
-            if let button = buttons.last { buttonWidths[buttons.count - 1] = Theme.textWidth(button.title, font: button.font!) + 22 }
+            guard additionalTitles != oldValue else { return }
+            if let index = additionalIndex, index >= additionalTitles.count { additionalIndex = nil }
+            rebuildAdditionalButtons()
             refresh(); needsLayout = true
+        }
+    }
+    private func rebuildAdditionalButtons() {
+        let fixed = Self.names.count
+        while buttons.count > fixed + additionalTitles.count {
+            buttons.removeLast().removeFromSuperview(); buttonWidths.removeLast()
+        }
+        while buttons.count < fixed + additionalTitles.count {
+            let index = buttons.count - fixed
+            let button = ChromeButton("", style: .filter, size: 12.5, weight: .medium)
+            button.onPress = { [weak self] in self?.select(Self.names.count + index) }
+            button.isEnabled = isEnabled
+            buttons.append(button); buttonWidths.append(0); addSubview(button)
+        }
+        for (index, title) in additionalTitles.enumerated() {
+            let button = buttons[fixed + index]
+            button.title = title
+            buttonWidths[fixed + index] = Theme.textWidth(title, font: button.font!) + 22
         }
     }
     private let sortButton = ChromeButton("", style: .plain, size: 12, weight: .medium)
@@ -36,9 +56,6 @@ final class FilterBar: FlippedView, NSMenuDelegate {
             button.onPress = { [weak self] in self?.select(i) }
             buttons.append(button); buttonWidths.append(Theme.textWidth(button.title, font: button.font!) + 22); addSubview(button)
         }
-        let additional = ChromeButton("", style: .filter, size: 12.5, weight: .medium)
-        additional.isHidden = true; additional.onPress = { [weak self] in self?.select(Self.names.count) }
-        buttons.append(additional); buttonWidths.append(0); addSubview(additional)
         sortButton.trailingSymbol = Theme.symbol("arrow.up.arrow.down", size: 10, weight: .medium)
         sortButton.onPress = { [weak self] in self?.showSortMenu() }
         addSubview(sortButton); refresh()
@@ -55,7 +72,8 @@ final class FilterBar: FlippedView, NSMenuDelegate {
         refresh(); needsLayout = true
     }
     private func refresh() {
-        for (i, button) in buttons.enumerated() { button.active = i == (additionalSelected ? Self.names.count : Int(options.kind ?? 0)) }
+        let current = additionalIndex.map { Self.names.count + $0 } ?? Int(options.kind ?? 0)
+        for (i, button) in buttons.enumerated() { button.active = i == current }
         let sortTitle = L10n.text("sort." + Self.sortName(options.sort))
         let changedSort = sortButton.title != sortTitle
         sortButton.title = sortTitle; sortButton.needsDisplay = true
@@ -65,7 +83,7 @@ final class FilterBar: FlippedView, NSMenuDelegate {
     override func layout() {
         super.layout()
         var x: CGFloat = 18
-        let visibleCount = Self.names.count + (additionalTitle == nil ? 0 : 1)
+        let visibleCount = Self.names.count + additionalTitles.count
         let sortWidth = Theme.textWidth(sortButton.title, font: sortButton.font!) + 16
         let available = max(0, bounds.width - 36 - sortWidth - 12 - CGFloat(visibleCount - 1) * 2)
         let natural = buttonWidths.prefix(visibleCount).reduce(0, +)
@@ -79,19 +97,28 @@ final class FilterBar: FlippedView, NSMenuDelegate {
         laidOut = true; moveCapsule(animated: false)
     }
     private func moveCapsule(animated: Bool) {
-        let target = buttons[additionalSelected ? Self.names.count : Int(options.kind ?? 0)].frame
+        let index = additionalIndex.map { Self.names.count + $0 } ?? Int(options.kind ?? 0)
+        guard buttons.indices.contains(index) else { return }
+        let target = buttons[index].frame
         guard capsule.frame != target else { return }
         Theme.Motion.frame(capsule, to: target, using: animated && !Theme.Motion.reduced ? Theme.Motion.chip : nil)
     }
     func select(_ index: Int, notify: Bool = true) {
-        guard !isHidden, isEnabled, index >= 0, index < Self.names.count + (additionalTitle == nil ? 0 : 1) else { return }
-        additionalSelected = index == Self.names.count
-        options.kind = index == 0 || additionalSelected ? nil : UInt8(index)
+        let count = Self.names.count + additionalTitles.count
+        guard !isHidden, isEnabled, index >= 0, index < count else { return }
+        if index < Self.names.count {
+            additionalIndex = nil
+            options.kind = index == 0 ? nil : UInt8(index)
+        } else {
+            additionalIndex = index - Self.names.count
+            options.kind = nil
+        }
         if notify { onChange?() }
     }
     func cycle(_ delta: Int) {
-        let count = Self.names.count + (additionalTitle == nil ? 0 : 1)
-        select(((additionalSelected ? Self.names.count : Int(options.kind ?? 0)) + delta + count) % count)
+        let count = Self.names.count + additionalTitles.count
+        let current = additionalIndex.map { Self.names.count + $0 } ?? Int(options.kind ?? 0)
+        select(((current + delta) % count + count) % count)
     }
     private func showSortMenu() {
         guard isEnabled else { return }

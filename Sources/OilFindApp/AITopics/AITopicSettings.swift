@@ -9,9 +9,20 @@ struct AITopicSettings: View {
                 Toggle(text("topicsEnabled"), isOn: Binding(get: { manager.enabled }, set: manager.setEnabled))
                 Text(text("topicsPrivacy")).font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
+            VStack(alignment: .leading, spacing: 5) {
+                Picker(text("topicsOpenTarget"), selection: Binding(get: { manager.openTarget }, set: { manager.openTarget = $0 })) {
+                    ForEach(AITopicOpenTarget.allCases, id: \.self) { Text(text($0.labelKey)).tag($0) }
+                }
+                Text(text("topicsHerdrHint")).font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            VStack(alignment: .leading, spacing: 5) {
+                Toggle(text("topicsIncludeAutomated"), isOn: Binding(get: { manager.includeAutomated }, set: { manager.includeAutomated = $0 }))
+                Text(text("topicsAutomatedHint")).font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
             providerRow("topicsClaudeProvider", provider: .claude)
             providerRow("topicsCodexProvider", provider: .codex)
             providerRow("topicsWorkBuddyProvider", provider: .workbuddy)
+            providerRow("topicsDSHProvider", provider: .dsh)
             if manager.indexing {
                 Text(text("topicsBuildingShort")).font(.footnote).foregroundStyle(.secondary)
             } else if manager.failed {

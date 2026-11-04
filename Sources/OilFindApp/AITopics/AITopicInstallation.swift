@@ -6,6 +6,13 @@ enum AITopicInstallation {
         .claude: "com.anthropic.claudefordesktop", .codex: "com.openai.codex",
         .workbuddy: "com.tencent.workbuddy.mac"
     ]
+    /// DSH is a terminal agent: its installation evidence is the session store plus a Node runtime.
+    static func dshInstalled(home: URL, environment: [String: String], executable: (URL) -> Bool) -> Bool {
+        let root = home.appendingPathComponent(".dsh/sessions")
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: root.path, isDirectory: &isDirectory), isDirectory.boolValue else { return false }
+        return DSHRuntime.node(home: home, environment: environment, executable: executable) != nil
+    }
 
     static func installed(home: URL = FileManager.default.homeDirectoryForCurrentUser,
                           environment: [String: String] = ProcessInfo.processInfo.environment,
@@ -20,6 +27,7 @@ enum AITopicInstallation {
                   !url.resolvingSymlinksInPath().pathComponents.contains(where: { $0 == ".Trash" || $0 == ".Trashes" }) else { return false }
             return Bundle(url: url)?.bundleIdentifier == id
         })
+        if dshInstalled(home: home, environment: environment, executable: executable) { result.insert(.dsh) }
         // Claude Code and Codex may be installed as CLIs without their desktop applications.
         guard !result.contains(.claude) || !result.contains(.codex) else { return result }
         var directories = (environment["PATH"] ?? "").split(separator: ":").map(String.init).filter { $0.hasPrefix("/") }

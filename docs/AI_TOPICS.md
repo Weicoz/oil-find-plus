@@ -10,6 +10,12 @@
 
 Codex 使用 codex://threads/UUID。Claude 桌面 local_ 会话使用已安装应用的 claude://claude.ai/epitaxy/local_ID 路由；CLI 会话通过临时自删除 .command 在 Terminal 执行 shell 转义后的 resume 命令，不发送新提示词。只有桌面 ID 的会话复制 open 深链命令。无法打开时保留结果并显示错误。菜单不提供删除原始会话。
 
+打开目标在设置中二选一，默认「优先 Herdr 终端」。优先 Herdr 时，会话正在本机 Herdr 窗格中运行就切到那个窗格并把 Herdr 宿主窗口提到最前，否则回落打开对应应用；此时附加动作是「在应用中打开」。选择「总是打开应用」时打开行为不变，附加动作改为「在 Herdr 终端中打开」，只在会话确实在跑时出现。宿主不限于 Muxy：先读 Herdr server 的 `__CFBundleIdentifier`，再沿进程祖先链找 GUI 应用，失败时回落到已知终端列表（Muxy、cmux、Terminal、iTerm2、Warp、Ghostty、kitty、Alacritty、WezTerm），结果缓存；宿主只负责把应用窗口抬到前台，具体标签页或工作区由宿主保持原状。检测只读调用 herdr agent list，单次 1.5 秒超时、3 秒缓存，仅用于决定这一项附加动作；未安装、调用失败或超时都只影响该动作。匹配先按话题 id 与会话标识精确相等命中，会话标识不区分大小写且优先于目录。已经报告了其他会话的窗格不再参与，避免跳到同目录里另一个会话。只有不报告会话标识的来源才继续匹配：要求来源名与窗格 Agent 相符、项目目录等于窗格工作目录或前台目录、标题在按竖线、间隔点或破折号分段后整段相等；任一条件不满足就不提供跳转。宁可少跳也不跳错。
+
+分类栏另列一个「Herdr」分类，只在检测到 herdr 可执行文件时出现，列出本机正在运行的 Herdr 窗格（窗格 ID、Agent 名、项目目录与标题），与「AI 话题」分类共享同一套匹配结果：已经匹配到某个窗格的会话同时出现在两个分类中，在「AI 话题」分类里该行标题前显示「Herdr」标签，在「Herdr」分类里按窗格列出。两个分类的输入提示分别为话题搜索与「搜索 Herdr 窗口」。窗格结果不提供打开应用的动作，只把该窗格切到前台。
+
+子代理与无头会话默认不显示：Claude 的 entrypoint 为 sdk-cli 或 isSidechain 为真、Codex 的 thread_source 为 automation/subagent/guardian_review 或 originator 为 codex_exec（或 rollout 首行 source 为 exec 或带 subagent 字段）都判定为自动会话，写入索引时带上 automated 标记。Claude 的嵌套子代理日志（projects/<key>/<id>/subagents/）与父会话共用 sessionId，不单独成条，正文并入父会话；Codex 子代理线程有独立会话 ID，保留为独立条目但同样带 automated 标记。设置中「包含子代理与无头会话」开关默认关闭，打开后搜索与数量都包含这些会话；开关状态独立持久化，切换后立即重查。归档规则对自动会话同样生效。
+
 ## 索引与同步
 
 功能随开源免费版提供，源码、图标、设置及测试均在公开仓库；不依赖授权、试用或私有模块。AppDelegate 持有单个 AITopicManager，搜索与设置复用同一实例，AdditionalSearchProvider 将话题并入原结果列表。设置开关控制索引与搜索。首次启用在后台建索引，先导入标题，再解析历史正文；已有索引直接可读。主文件索引繁忙且搜索面板未打开时让出后台资源。关闭开关或退出应用时取消任务；关闭开关会撤下分类及话题结果，已有索引保留。
@@ -20,7 +26,7 @@ Codex 使用 codex://threads/UUID。Claude 桌面 local_ 会话使用已安装�
 
 历史正文导入按工作线程的实际 CPU 时间主动限速，目标为单个核心的 25%。每次最多休息 10 ms，等待期间继续检查取消；元数据先于历史正文同步，搜索使用独立读取队列。单次系统 JSON 解析、压缩或首次压实仍可能短暂突发，因此预算控制持续占用，并非每个采样瞬间的硬上限。限速会延长首次补齐历史正文的总耗时。
 
-读取 CODEX_HOME / CLAUDE_CONFIG_DIR / WORKBUDDY_CONFIG_DIR 或默认目录。Codex 动态选择最高版本 state_*.sqlite、thread_history_*.sqlite，优先实际显示名 name，排除子代理；旧版支持 JSONL。权威 history 已覆盖的已知日志在打开前跳过；其他日志按文件身份复用首行识别结果，新增或重写文件才重新读取头部。目录日志排序只读取每个路径的修改时间一次；每次仍读取最新 Codex 元数据，来源数据库身份和行内容相同、显示信息完整时复用已同步行，避免重复读取索引正文。Claude 合并桌面描述符与顶层项目 JSONL，按 cliSessionId 去重。仅保存用户与助手文本，忽略工具和思考正文。
+读取 CODEX_HOME / CLAUDE_CONFIG_DIR / WORKBUDDY_CONFIG_DIR 或默认目录。Codex 动态选择最高版本 state_*.sqlite、thread_history_*.sqlite，优先实际显示名 name；子代理线程保留在索引中并标记 automated，默认搜索隐藏；旧版支持 JSONL。权威 history 已覆盖的已知日志在打开前跳过；其他日志按文件身份复用首行识别结果，新增或重写文件才重新读取头部。目录日志排序只读取每个路径的修改时间一次；每次仍读取最新 Codex 元数据，来源数据库身份和行内容相同、显示信息完整时复用已同步行，避免重复读取索引正文。Claude 合并桌面描述符与顶层项目 JSONL，按 cliSessionId 去重。仅保存用户与助手文本，忽略工具和思考正文。
 
 FSEvents 监听来源目录，0.15 秒延迟；面板可见时 0.25 秒合并、不可见时 30 秒合并后增量同步（进行中的会话每隔几秒追加，每轮都遍历全部会话并写库），一轮导入期间又有新事件时结束后同样先合并，流式写入的会话不会让导入首尾相接。新来源目录由父目录监听发现。唤起面板立即补查，另每 5 分钟兜底检查。写连接使用 `synchronous=NORMAL`，所有连接 `temp_store=MEMORY`，对账临时表与排序不再写 $TMPDIR 临时文件。普通来源事件按 Agent 合并入队，不取消其他来源已经完成的工作。调度先更新待处理来源的标题和归档元数据，再轮流补全正文；Claude 与 Codex 的正文计划可在话题事务之间让出并续跑，避免持续写入把后面的来源饿死。关闭、退出与生命周期变化仍会取消，单话题事务保证取消时不留下半条正文。Codex 的版本化 state/history 数据库及其 WAL 额外使用 vnode 通知，避免仅依靠持续打开 WAL 的 FSEvents 合并事件；`-shm` 只承载锁与读标记，Codex 每次读库都会改它，不触发同步；目录变化时更新监听路径。来源枚举不完整时保留缓存，完整枚举后对账删除。
 
@@ -28,7 +34,7 @@ FSEvents 监听来源目录，0.15 秒延迟；面板可见时 0.25 秒合并、
 
 ## 验收
 
-验证使用 OILFIND_FREE=1 的筛选测试及 DEBUG --snapshot；--topic-index 可指定测试索引，--filter additional 选择话题分类。设置入口位于底栏最右侧，以齿轮和“设置 / Settings”文字呈现，放在快捷键提示之后。原始应用图标仅用于标识对应产品，出处见 Sources/OilFindApp/Resources/TopicIcons/README.txt。不提交会话数据库、索引或构建产物。
+验证使用 OILFIND_FREE=1 的筛选测试及 DEBUG --snapshot；--topic-index 可指定测试索引，--filter additional 选择话题分类。OilFindUITests.AITopicHerdrTests 覆盖匹配规则、命令超时、子进程环境剥离、打开目标持久化与宿主识别（环境覆盖、已知终端列表，实机解析出 com.muxy.app）；本机装有 herdr 时同一套件还会只读调用真实 agent list 验证探测与解析。OilFindUITests.AITopicVisibilityTests 覆盖自动会话的判定与默认隐藏、包含开关、归档交互、多附加分类的选择逻辑，以及 Herdr 分类的窗格列表、标签与跨分类结果。设置入口位于底栏最右侧，以齿轮和“设置 / Settings”文字呈现，放在快捷键提示之后。原始应用图标仅用于标识对应产品，出处见 Sources/OilFindApp/Resources/TopicIcons/README.txt。不提交会话数据库、索引或构建产物。
 
 
 2026-10-16 本机验证：不带私有模块的免费构建通过；免费筛选测试 21 项通过，追加的共享设置开关与底栏入口 2 项通过。来源同步包含 33 项检查，核心字面搜索包含 856 项 oracle 断言。带私有模块的设置、状态与参数相关筛选测试 23 项通过，清理 Pro 描述后 M28Tests 再次通过；开放核心检查 2 项通过。独立只读检查发现的 Pro 文案残留已移除。中英文 DEBUG 快照确认底栏设置文字与图标完整，实机点击可打开设置，AI 话题开关及本地搜索在免费应用中可用。没有运行全量测试、release 构建、打包、提交或发布。
@@ -38,6 +44,8 @@ FSEvents 监听来源目录，0.15 秒延迟；面板可见时 0.25 秒合并、
 来源开关验收：免费版相关筛选测试 21 项通过（含新增长期缓存保留与重新启用同步、来源开关持久化及旧动作拒绝），开放核心检查 2 项通过；独立只读复核未发现阻塞问题。DEBUG 中英文设置快照确认两个开关与说明完整显示。
 
 归档策略确认继续排除。新增 FSEvents 回归覆盖 Claude 桌面描述符原子替换与 Codex SQLite WAL 更新：仅改变归档字段、保持时间戳不变，不手动刷新，已展示结果与数量自动撤下，旧动作被拒绝，取消归档后自动恢复。该免费筛选测试通过。本机只读比对未发现活跃索引与来源归档标记不一致；按用户提供的具体示例复查，来源仍标为未归档，较早的日期本身不作为归档依据。
+
+Herdr 分类与自动会话开关验收：OilFindUITests.AITopicVisibilityTests 6 项通过，覆盖自动会话判定（Claude sdk-cli/sidechain、Codex codex_exec/automation/subagent rollout）、默认隐藏与包含开关、归档后仍隐藏、多附加分类选择，以及 Herdr 分类的窗格列示与「Herdr」标签。Codex 子代理线程以 automated 标记保留在索引中（本机实测 699 条自动会话），开关打开后可检索。全量 swift test 130 项通过，swift build -c release 与 OILFIND_FREE=1 swift build 均通过。旧索引缺少 automated 列时，只读连接按 0 处理，等写入连接打开后再补列。M26UITests 的 QuickLook 用例在 xctest 非活跃进程下先激活应用，避免原生预览面板 orderOut 不生效导致的环境性失败。
 
 
 ## WorkBuddy

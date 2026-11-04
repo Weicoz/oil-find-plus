@@ -2,12 +2,13 @@ import Foundation
 import SQLite3
 
 public enum AITopicProvider: String, CaseIterable {
-    case claude, codex, workbuddy
+    case claude, codex, workbuddy, dsh
     public var name: String {
         switch self {
         case .claude: return "Claude Code"
         case .codex: return "Codex"
         case .workbuddy: return "WorkBuddy"
+        case .dsh: return "DeepSeek-Harness"
         }
     }
 }
@@ -22,16 +23,21 @@ public struct AITopic: Equatable {
     public var transcript: String
     public var archived: Bool
     public var excerpt: String
+    /// True for subagent and headless sessions: they are hidden unless the user opts in.
+    public var automated: Bool
 
     public init(id: String, provider: AITopicProvider, title: String, project: String = "", modified: Double = 0,
-                desktopID: String = "", transcript: String = "", archived: Bool = false, excerpt: String = "") {
+                desktopID: String = "", transcript: String = "", archived: Bool = false, excerpt: String = "",
+                automated: Bool = false) {
         self.id = id; self.provider = provider; self.title = title; self.project = project; self.modified = modified
         self.desktopID = desktopID; self.transcript = transcript; self.archived = archived; self.excerpt = excerpt
+        self.automated = automated
     }
     public var key: String { provider.rawValue + ":" + id }
     public var resumeCommand: String {
         let quote: (String) -> String = { "'" + $0.replacingOccurrences(of: "'", with: "'\\''") + "'" }
         if provider == .workbuddy { return workbuddyURL.map { "open " + quote($0.absoluteString) } ?? "" }
+        if provider == .dsh { return (project.isEmpty ? "" : "cd " + quote(project) + " && ") + "dsh tui --resume " + quote(id) }
         guard provider == .claude || provider == .codex else { return "" }
         let command = provider == .claude ? "claude" : "codex"
         if provider == .claude, UUID(uuidString: id) == nil,

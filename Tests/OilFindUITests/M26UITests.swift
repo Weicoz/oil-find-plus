@@ -133,6 +133,12 @@ extension M26UITests {
         }
         let controller = panel.searchController
         try controller.prepareSnapshot(state: "results", query: "row", options: .init(sort: .name, ascending: true), store: store, selection: 0)
+        // QuickLook only hides reliably when the owning app is active; xctest otherwise runs accessory.
+        NSApp.unhide(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        let activeDeadline = Date().addingTimeInterval(2)
+        while !NSApp.isActive && Date() < activeDeadline { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
+        try XCTSkipUnless(NSApp.isActive, "QuickLook 面板需要活跃应用，xctest 当前无法激活")
         panel.makeKeyAndOrderFront(nil)
         controller.quickLook.close()
         let space = key(49, characters: " ")

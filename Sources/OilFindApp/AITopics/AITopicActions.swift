@@ -53,15 +53,15 @@ final class AITopicIcons {
     }
     func image(_ provider: AITopicProvider) -> NSImage {
         if let image = images[provider] { return image }
-        let identifier = AITopicInstallation.bundleIdentifiers[provider]!
+        let identifier = AITopicInstallation.bundleIdentifiers[provider]
         let image: NSImage
-        if provider != .codex, let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: identifier) {
+        if provider != .codex, let identifier, let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: identifier) {
             image = NSWorkspace.shared.icon(forFile: app.path)
         } else if let asset = Self.bundledImage(provider) {
             image = asset
-        } else if let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: identifier) {
+        } else if let identifier, let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: identifier) {
             image = NSWorkspace.shared.icon(forFile: app.path)
-        } else { image = NSImage(systemSymbolName: "bubble.left.and.bubble.right", accessibilityDescription: provider.name)! }
+        } else { image = NSImage(systemSymbolName: provider == .dsh ? "chevron.left.forwardslash.chevron.right" : "bubble.left.and.bubble.right", accessibilityDescription: provider.name)! }
         images[provider] = image; return image
     }
 }

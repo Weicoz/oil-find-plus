@@ -7,18 +7,23 @@ public struct AITopicLocations {
     public var claude: URL
     public var claudeDesktop: URL
     public var workbuddy: URL
-    public init(home: URL, codex: URL? = nil, claude: URL? = nil, workbuddy: URL? = nil) {
+    public var dsh: URL
+    public var dshSessions: URL { dsh.appendingPathComponent("sessions") }
+    public var dshProjcache: URL { dsh.appendingPathComponent("storages/session_projcache/sessions") }
+    public init(home: URL, codex: URL? = nil, claude: URL? = nil, workbuddy: URL? = nil, dsh: URL? = nil) {
         self.codex = codex ?? home.appendingPathComponent(".codex")
         self.claude = claude ?? home.appendingPathComponent(".claude")
         claudeDesktop = home.appendingPathComponent("Library/Application Support/Claude/claude-code-sessions")
         self.workbuddy = workbuddy ?? home.appendingPathComponent(".workbuddy")
+        self.dsh = dsh ?? home.appendingPathComponent(".dsh")
     }
     public static var local: AITopicLocations {
         let environment = ProcessInfo.processInfo.environment
         return .init(home: FileManager.default.homeDirectoryForCurrentUser,
                      codex: environment["CODEX_HOME"].map { URL(fileURLWithPath: NSString(string: $0).expandingTildeInPath) },
                      claude: environment["CLAUDE_CONFIG_DIR"].map { URL(fileURLWithPath: NSString(string: $0).expandingTildeInPath) },
-                     workbuddy: environment["WORKBUDDY_CONFIG_DIR"].map { URL(fileURLWithPath: NSString(string: $0).expandingTildeInPath) })
+                     workbuddy: environment["WORKBUDDY_CONFIG_DIR"].map { URL(fileURLWithPath: NSString(string: $0).expandingTildeInPath) },
+                     dsh: environment["DSH_HOME"].map { URL(fileURLWithPath: NSString(string: $0).expandingTildeInPath) })
     }
 }
 
@@ -85,6 +90,8 @@ public final class AITopicIndexer {
         let sessionID: String?
         let project: String
         let isSubagent: Bool
+        /// Headless run started with codex exec; hidden with the other automated sessions.
+        let automated: Bool
         var transcriptImported: Bool
     }
     private struct CodexMetadataSourceIdentity: Equatable {
@@ -136,6 +143,10 @@ public final class AITopicIndexer {
             self.hasMetadata = hasMetadata
         }
     }
+    private struct DSHHistoryPlan {
+        let paths: [DSHSessionFile]
+        var nextIndex = 0
+    }
     private enum CodexStampResult {
         case success(CodexFileStamp)
         case failure(Int32)
@@ -159,6 +170,8 @@ public final class AITopicIndexer {
     private var codexMetadataDirtyKeys = Set<String>()
     private var claudeHistoryPlan: ClaudeHistoryPlan?
     private var codexHistoryPlan: CodexHistoryPlan?
+    private var dshHistoryPlan: DSHHistoryPlan?
+    private var dshMetadataCache: [String: (stamp: Double, metadata: DSHMetadata)] = [:]
     public init(index: AITopicIndex, locations: AITopicLocations = .local) { self.index = index; self.locations = locations }
 
     private var cancellation: () -> Bool = { false }
@@ -230,6 +243,11 @@ public final class AITopicIndexer {
             catch is CancellationError { throw CancellationError() }
             catch { completeProviders.remove(.workbuddy); metadataFailures[.workbuddy] = error }
         }
+        if providers.contains(.dsh) {
+            do { metadataTopicKeys[.dsh] = try dshMetadata(progress: progress) }
+            catch is CancellationError { throw CancellationError() }
+            catch { completeProviders.remove(.dsh); metadataFailures[.dsh] = error }
+        }
         completed = true
     }
 
@@ -246,6 +264,7 @@ public final class AITopicIndexer {
             seenFiles[provider] = []
             if provider == .claude { claudeHistoryPlan = nil }
             if provider == .codex { codexHistoryPlan = nil }
+            if provider == .dsh { dshHistoryPlan = nil }
         }
         switch provider {
         case .claude:
@@ -255,13 +274,16 @@ public final class AITopicIndexer {
         case .workbuddy:
             try WorkBuddyTopicImporter(index: index, root: locations.workbuddy, checkpoint: checkCancellation).refresh(progress: progress)
             activeHistoryProviders.remove(provider)
+        case .dsh:
+            guard try dshTranscripts(shouldYield: shouldYield, progress: progress) else { return false }
         }
-        if (provider == .claude || provider == .codex), completeProviders.contains(provider) {
+        if (provider == .claude || provider == .codex || provider == .dsh), completeProviders.contains(provider) {
             let live = Set(topics.values.filter { $0.provider == provider }.map(\.key))
             try index.reconcile(provider: provider, topics: live, files: seenFiles[provider] ?? [])
         }
         if provider == .claude { claudeHistoryPlan = nil }
         if provider == .codex { codexHistoryPlan = nil }
+        if provider == .dsh { dshHistoryPlan = nil }
         activeHistoryProviders.remove(provider)
         return true
     }
@@ -270,7 +292,9 @@ public final class AITopicIndexer {
         catch {
             let error = error as NSError
             if error.domain != NSCocoaErrorDomain || ![NSFileNoSuchFileError, NSFileReadNoSuchFileError].contains(error.code) {
-                completeProviders.remove(root.path.hasPrefix(locations.codex.path) ? .codex : .claude)
+                if root.path.hasPrefix(locations.codex.path) { completeProviders.remove(.codex) }
+                else if root.path.hasPrefix(locations.dsh.path) { completeProviders.remove(.dsh) }
+                else { completeProviders.remove(.claude) }
             }
             return []
         }
@@ -343,12 +367,14 @@ public final class AITopicIndexer {
         while try s.next() {
             try checkCancellation()
             lastCodexDiscoveryMetrics.codexMetadataRowsRead += 1
-            if ["subagent", "guardian_review"].contains(s.text(7)) || s.text(8).contains("subagent") || s.text(8).contains("guardian") { continue }
+            // Subagent and guardian threads stay in the index with the automated flag so the
+            // settings toggle can reveal them; search hides them by default.
             let id = s.text(0), sourceTitle = s.text(1), project = s.text(2), modified = s.double(3)
             let transcript = s.text(4), archived = s.int(5), sourceExcerpt = s.text(6)
             let threadSource = s.text(7), source = s.text(8)
+            let automated = threadSource == "automation" || threadSource == "subagent" || threadSource == "guardian_review" || source == "codex_exec"
             let topic = AITopic(id: id, provider: .codex, title: String(sourceTitle.prefix(120)).replacingOccurrences(of: "\n", with: " "), project: project, modified: modified,
-                                transcript: transcript, archived: archived != 0, excerpt: String(sourceExcerpt.prefix(220)))
+                                transcript: transcript, archived: archived != 0, excerpt: String(sourceExcerpt.prefix(220)), automated: automated)
             let signature = CodexMetadataRowSignature(title: sourceTitle, project: project, modified: modified,
                                                       transcript: transcript, archived: archived, excerpt: sourceExcerpt,
                                                       threadSource: threadSource, source: source)
@@ -566,16 +592,18 @@ public final class AITopicIndexer {
             let object = (try? JSONSerialization.jsonObject(with: firstLine)) as? [String: Any]
             let payload = object?["type"] as? String == "session_meta" ? object?["payload"] as? [String: Any] : nil
             let source = payload?["source"] as? [String: Any]
+            let originator = payload?["originator"] as? String ?? ""
+            let headless = payload?["source"] as? String == "exec" || originator == "codex_exec"
             header = CodexHeader(stamp: stamp, sessionID: payload?["id"] as? String,
                                  project: payload?["cwd"] as? String ?? "", isSubagent: source?["subagent"] != nil,
-                                 transcriptImported: false)
+                                 automated: headless || source?["subagent"] != nil, transcriptImported: false)
             switch Self.codexFileStamp(url) {
             case .success(let current) where current == stamp: codexHeaders[path] = header
             case .failure(ENOENT), .failure(ENOTDIR): return
             default: completeProviders.remove(.codex); return
             }
         }
-        guard let id = header.sessionID, !header.isSubagent, !plan.imported.contains(id) else { return }
+        guard let id = header.sessionID, !plan.imported.contains(id) else { return }
         if plan.hasMetadata && topics["codex:" + id] == nil { return }
         let persisted = try index.topic("codex:" + id)
         var topic = topics["codex:" + id] ?? persisted ?? AITopic(id: id, provider: .codex, title: "", project: header.project, modified: Self.modified(url), transcript: url.path, archived: url.path.contains("/archived_sessions/"))
@@ -583,6 +611,7 @@ public final class AITopicIndexer {
         if !plan.hasMetadata {
             topic.project = header.project
             topic.archived = url.path.contains("/archived_sessions/")
+            topic.automated = header.automated
         }
         topic.transcript = url.path
         seenFiles[.codex, default: []].insert(url.path)
@@ -604,6 +633,138 @@ public final class AITopicIndexer {
         plan.imported.insert(id)
         if order % 8 == 0 { progress() }
     }
+    private func dshMetadata(progress: () -> Void) throws -> Set<String> {
+        let sessions = DSHSessionStore.sessions(root: locations.dshSessions)
+        var descriptors: [AITopic] = []
+        descriptors.reserveCapacity(sessions.count)
+        for (position, session) in sessions.enumerated() {
+            try checkCancellation()
+            let cache = locations.dshProjcache.appendingPathComponent(session.id + ".json")
+            let stamp = Self.modified(cache)
+            let metadata: DSHMetadata
+            if let cached = dshMetadataCache[session.id], cached.stamp == stamp {
+                metadata = cached.metadata
+            } else {
+                metadata = DSHSessionStore.metadata(for: session, cache: cache)
+                dshMetadataCache[session.id] = (stamp, metadata)
+            }
+            if metadata.blank { continue }
+            let key = "dsh:" + session.id
+            let prior = try topics[key] ?? index.topic(key)
+            var topic = prior ?? AITopic(id: session.id, provider: .dsh, title: "", modified: metadata.modified, transcript: session.transcript.path)
+            if !metadata.title.isEmpty { topic.title = metadata.title }
+            if !metadata.project.isEmpty { topic.project = metadata.project }
+            topic.modified = max(topic.modified, metadata.modified)
+            topic.transcript = session.transcript.path
+            if topic.excerpt.isEmpty, !metadata.firstPrompt.isEmpty { topic.excerpt = String(metadata.firstPrompt.prefix(220)) }
+            if metadata.automated { topic.automated = true }
+            topics[key] = topic
+            descriptors.append(topic)
+            if position % 8 == 0 { progress() }
+        }
+        try index.transaction { for topic in descriptors { try index.upsert(topic) } }
+        return Set(descriptors.map(\.key))
+    }
+
+    private func dshTranscripts(shouldYield: () -> Bool, progress: () -> Void) throws -> Bool {
+        if dshHistoryPlan == nil {
+            dshHistoryPlan = DSHHistoryPlan(paths: DSHSessionStore.sessions(root: locations.dshSessions))
+        }
+        guard var plan = dshHistoryPlan else { return true }
+        while plan.nextIndex < plan.paths.count {
+            if shouldYield() { dshHistoryPlan = plan; return false }
+            try checkCancellation()
+            let i = plan.nextIndex, session = plan.paths[i]
+            plan.nextIndex += 1
+            dshHistoryPlan = plan
+            let cache = locations.dshProjcache.appendingPathComponent(session.id + ".json")
+            let metadata = DSHSessionStore.metadata(for: session, cache: cache)
+            if metadata.blank { continue }
+            let key = "dsh:" + session.id
+            let prior = try topics[key] ?? index.topic(key)
+            var topic = prior ?? AITopic(id: session.id, provider: .dsh, title: "", modified: metadata.modified, transcript: session.transcript.path)
+            seenFiles[.dsh, default: []].insert(session.transcript.path)
+            topic.transcript = session.transcript.path
+            topic.modified = max(topic.modified, metadata.modified)
+            if topic.title.isEmpty { topic.title = metadata.title.isEmpty ? String(metadata.firstPrompt.prefix(120)).replacingOccurrences(of: "\n", with: " ") : metadata.title }
+            if topic.project.isEmpty { topic.project = metadata.project }
+            if topic.excerpt.isEmpty, !metadata.firstPrompt.isEmpty { topic.excerpt = String(metadata.firstPrompt.prefix(220)) }
+            if metadata.automated { topic.automated = true }
+            try index.upsert(topic)
+            try dshTranscript(session.transcript, topic: &topic)
+            topics[key] = topic
+            if i % 8 == 0 { progress() }
+        }
+        dshHistoryPlan = nil
+        return true
+    }
+
+    /// DSH appends complete zstd frames, so a saved compressed offset resumes without re-reading the prefix.
+    private func dshTranscript(_ url: URL, topic: inout AITopic) throws {
+        guard let attributes = try? files.attributesOfItem(atPath: url.path), let size = (attributes[.size] as? NSNumber)?.int64Value else {
+            completeProviders.remove(.dsh); return
+        }
+        let inode = (attributes[.systemFileNumber] as? NSNumber)?.stringValue ?? "0"
+        let cursor = try index.cursor(url.path)
+        var start: Int64 = 0, plaintextBase: Int64 = 0
+        if let cursor {
+            let fields = cursor.identity.split(separator: ":", omittingEmptySubsequences: false).map(String.init)
+            if fields.count == 3, fields[0] == "dsh", fields[1] == inode, let base = Int64(fields[2]), size >= cursor.offset {
+                start = cursor.offset; plaintextBase = base
+            }
+        }
+        if start == size { return }
+        guard let node = DSHRuntime.node(), let script = DSHRuntime.script() else {
+            throw AITopicError.database("DSH sessions need Node.js and dsh-decode.js")
+        }
+        let decoded = try DSHRuntime.decode(path: url.path, start: start, node: node, script: script)
+        guard decoded.endOffset > start else { return }
+        var position = plaintextBase
+        try index.transaction {
+            if start == 0 { try index.removeMessages(topic.key, prefix: "file:") }
+            let buffer = decoded.plaintext
+            var lineStart = buffer.startIndex
+            while let newline = buffer[lineStart...].firstIndex(of: 10) {
+                let line = buffer[lineStart..<newline]
+                try consumeDSH(line, offset: position, topic: &topic)
+                position += Int64(line.count + 1)
+                lineStart = newline + 1
+            }
+            try index.upsert(topic)
+            try index.cursor(url.path, identity: "dsh:" + inode + ":" + String(position), offset: decoded.endOffset, topic: topic.key, kind: "file")
+        }
+    }
+
+    private func consumeDSH(_ line: Data.SubSequence, offset: Int64, topic: inout AITopic) throws {
+        guard let object = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
+              let type = object["type"] as? String else { return }
+        switch type {
+        case "session":
+            if topic.project.isEmpty { topic.project = object["cwd"] as? String ?? "" }
+            if (object["delegationDepth"] as? Int ?? 0) > 0 || object["origin"] as? String == "subagent" { topic.automated = true }
+        case "session/title":
+            if let title = (object["data"] as? [String: Any])?["title"] as? String, !title.isEmpty { topic.title = title }
+        case "user/message":
+            guard let data = object["data"] as? [String: Any], let source = data["source"] as? [String: Any],
+                  source["kind"] as? String == "user" else { return }
+            let body = AITopicTranscript.text(data["content"])
+            guard !body.isEmpty, !body.hasPrefix("<system-reminder>"), !body.hasPrefix("Current runtime context.") else { return }
+            try recordDSH(body, user: true, offset: offset, topic: &topic)
+        case "assistant/message":
+            guard let message = (object["data"] as? [String: Any])?["message"] as? [String: Any] else { return }
+            let body = AITopicTranscript.text(message["content"])
+            guard !body.isEmpty else { return }
+            try recordDSH(body, user: false, offset: offset, topic: &topic)
+        default: break
+        }
+    }
+
+    private func recordDSH(_ body: String, user: Bool, offset: Int64, topic: inout AITopic) throws {
+        if user && topic.title.isEmpty { topic.title = String(body.prefix(120)).replacingOccurrences(of: "\n", with: " ") }
+        if topic.excerpt.isEmpty { topic.excerpt = String(body.prefix(220)) }
+        try index.message(topic.key, key: "file:" + String(offset), body: body)
+    }
+
     private func transcript(_ url: URL, topic: inout AITopic, clearDerivedFieldsOnRewrite: Bool = false) throws {
         guard let attributes = try? files.attributesOfItem(atPath: url.path), let size = attributes[.size] as? NSNumber,
               let handle = try? FileHandle(forReadingFrom: url) else { completeProviders.remove(topic.provider); return }
@@ -627,8 +788,9 @@ public final class AITopicIndexer {
         try index.transaction {
             if offset == 0 {
                 try index.removeMessages(topic.key, prefix: "file:")
-                if topic.provider == .claude && topic.desktopID.isEmpty {
-                    topic.title = ""; topic.project = ""; topic.excerpt = ""
+                if topic.provider == .claude {
+                    topic.automated = false
+                    if topic.desktopID.isEmpty { topic.title = ""; topic.project = ""; topic.excerpt = "" }
                 } else if clearDerivedFieldsOnRewrite {
                     topic.title = ""; topic.excerpt = ""
                 }
@@ -667,6 +829,8 @@ public final class AITopicIndexer {
             if topic.desktopID.isEmpty {
                 if let title = object["customTitle"] as? String ?? object["aiTitle"] as? String { topic.title = title }
             }
+            // sdk-cli entrypoints are headless runs; sidechains are subagent work.
+            if object["entrypoint"] as? String == "sdk-cli" || object["isSidechain"] as? Bool == true { topic.automated = true }
         }
         guard let message = topic.provider == .claude ? AITopicTranscript.claude(object) : AITopicTranscript.codex(object) else { return }
         if message.user && topic.title.isEmpty { topic.title = String(message.body.prefix(120)).replacingOccurrences(of: "\n", with: " ") }

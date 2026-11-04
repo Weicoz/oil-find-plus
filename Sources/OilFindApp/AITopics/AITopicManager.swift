@@ -11,6 +11,18 @@ final class AITopicManager: ObservableObject {
     @Published private(set) var failed = false
     @Published private(set) var count = 0
     @Published private(set) var diskBytes: Int64 = 0
+    /// Where a topic opens by default; the Herdr pane wins only when the session runs there.
+    @Published var openTarget: AITopicOpenTarget {
+        didSet { defaults.set(openTarget.rawValue, forKey: AITopicOpenTarget.defaultsKey) }
+    }
+    /// Subagent and headless sessions stay out of results unless the user asks for them.
+    @Published var includeAutomated: Bool {
+        didSet {
+            guard includeAutomated != oldValue else { return }
+            defaults.set(includeAutomated, forKey: "aiTopicsIncludeAutomated")
+            refreshCount(); onChange?()
+        }
+    }
     var onChange: (() -> Void)?
     var onAvailabilityChange: (() -> Void)?
     var isEnabled: Bool { enabled && !activeProviders.isEmpty }
@@ -56,6 +68,8 @@ final class AITopicManager: ObservableObject {
         self.detectProviders = detectProviders
         self.url = url ?? Self.defaultURL
         enabled = defaults.object(forKey: "aiTopicsEnabled") as? Bool ?? true
+        openTarget = AITopicOpenTarget(rawValue: defaults.string(forKey: AITopicOpenTarget.defaultsKey) ?? "") ?? .herdr
+        includeAutomated = defaults.bool(forKey: "aiTopicsIncludeAutomated")
         let installed = detectProviders()
         let storedProviders = Set(AITopicProvider.allCases.filter { defaults.object(forKey: Self.providerPreferenceKey($0)) as? Bool ?? installed.contains($0) })
         enabledProviders = storedProviders; selectedProviders = storedProviders
@@ -119,6 +133,7 @@ final class AITopicManager: ObservableObject {
         if providers.contains(.codex) { roots.append(locations.codex.path) }
         if providers.contains(.claude) { roots.append(contentsOf: [locations.claude.path, locations.claudeDesktop.path]) }
         if providers.contains(.workbuddy) { roots.append(locations.workbuddy.path) }
+        if providers.contains(.dsh) { roots.append(contentsOf: [locations.dshSessions.path, locations.dshProjcache.path]) }
         roots = roots.map { path in
             var url = URL(fileURLWithPath: path)
             while !FileManager.default.fileExists(atPath: url.path) && url.path != "/" { url.deleteLastPathComponent() }
@@ -162,6 +177,10 @@ final class AITopicManager: ObservableObject {
         let codex = Self.canonicalPath(locations.codex.path), claude = Self.canonicalPath(locations.claude.path)
         let desktop = Self.canonicalPath(locations.claudeDesktop.path)
         let workbuddy = Self.canonicalPath(locations.workbuddy.path)
+        if provider == .dsh {
+            let sessions = Self.canonicalPath(locations.dshSessions.path), cache = Self.canonicalPath(locations.dshProjcache.path)
+            return path == sessions || path.hasPrefix(sessions + "/") || path == cache || path.hasPrefix(cache + "/")
+        }
         if provider == .workbuddy { return path == workbuddy || path == workbuddy + "/projects" || path.hasPrefix(workbuddy + "/projects/") ||
             path == workbuddy + "/storage" || path == workbuddy + "/storage/skeleton" || path == workbuddy + "/storage/skeleton/account-snapshot.json" ||
             ["workbuddy.db", "workbuddy.db-wal"].contains(URL(fileURLWithPath: path).lastPathComponent) && URL(fileURLWithPath: path).deletingLastPathComponent().path == workbuddy }
@@ -312,6 +331,7 @@ final class AITopicManager: ObservableObject {
         let cancelled = { [weak self] in
             guard let self else { return true }; return self.locked { token != self.queryGeneration }
         }
+        let includeAutomated = self.includeAutomated
         readerQueue.async { [weak self] in
             guard let self, !cancelled() else { return }
             let result: Result<AITopicSearchResult, Error>
@@ -324,7 +344,7 @@ final class AITopicManager: ObservableObject {
                     return
                 }
                 if self.reader == nil { self.reader = try AITopicIndex(url: self.url, readOnly: true) }
-                let found = try self.reader!.search(text, provider: provider, providers: self.searchableProviders(providers, index: self.reader!), limit: limit, isCancelled: cancelled)
+                let found = try self.reader!.search(text, provider: provider, providers: self.searchableProviders(providers, index: self.reader!), limit: limit, includeAutomated: includeAutomated, isCancelled: cancelled)
                 result = .success(found)
             } catch { self.reader = nil; result = .failure(error) }
             DispatchQueue.main.async { [weak self] in
@@ -340,7 +360,7 @@ final class AITopicManager: ObservableObject {
         }
         return try readerQueue.sync {
             if reader == nil { reader = try AITopicIndex(url: url, readOnly: true) }
-            let found = try reader!.search(text, providers: searchableProviders(providers, index: reader!), limit: Int.max, isCancelled: cancelled)
+            let found = try reader!.search(text, providers: searchableProviders(providers, index: reader!), limit: Int.max, includeAutomated: includeAutomated, isCancelled: cancelled)
             return cancelled() ? .init(topics: [], hasMore: false, elapsedMs: found.elapsedMs) : found
         }
     }
@@ -352,7 +372,7 @@ final class AITopicManager: ObservableObject {
             if !providers.isEmpty, FileManager.default.fileExists(atPath: self.url.path) {
                 do {
                     if self.reader == nil { self.reader = try AITopicIndex(url: self.url, readOnly: true) }
-                    total = try self.reader!.count(providers: self.searchableProviders(providers, index: self.reader!))
+                    total = try self.reader!.count(providers: self.searchableProviders(providers, index: self.reader!), includeAutomated: self.includeAutomated)
                 } catch { total = 0 }
             }
             DispatchQueue.main.async { [weak self] in

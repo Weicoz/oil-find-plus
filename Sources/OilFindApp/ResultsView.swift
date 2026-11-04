@@ -26,6 +26,16 @@ final class ResultCell: NSTableCellView {
     private let pathLabel = Theme.label(11.5, .regular, .secondaryLabelColor)
     private let dateLabel = Theme.label(11.5, .regular, .secondaryLabelColor)
     private let sizeLabel = Theme.label(11.5, .regular, .tertiaryLabelColor)
+    /// Small capsule naming a live session's surface, for example Herdr.
+    private let badgeLabel: NSTextField = {
+        let label = Theme.label(10, .semibold, .controlAccentColor)
+        label.alignment = .center
+        label.wantsLayer = true
+        label.layer?.cornerRadius = 3
+        label.layer?.masksToBounds = true
+        label.isHidden = true
+        return label
+    }()
     private var configuration = 0
     private var displayingThumbnail = false
     override init(frame: NSRect) {
@@ -37,17 +47,23 @@ final class ResultCell: NSTableCellView {
         icon.wantsLayer = true
         dateLabel.alignment = .right; sizeLabel.alignment = .right
         sizeLabel.font = .monospacedDigitSystemFont(ofSize: 11.5, weight: .regular)
-        [icon, nameLabel, detailLabel, pathLabel, dateLabel, sizeLabel].forEach(addSubview)
+        [icon, nameLabel, detailLabel, pathLabel, dateLabel, sizeLabel, badgeLabel].forEach(addSubview)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func layout() {
         super.layout()
         icon.frame = NSRect(x: 26, y: 9, width: 32, height: 32)
-        let width = max(0, bounds.width - 236)
-        nameLabel.frame = NSRect(x: 70, y: 8, width: width, height: 18)
+        var leading = 70.0
+        if !badgeLabel.isHidden {
+            let badgeWidth = ceil(badgeLabel.attributedStringValue.size().width) + 11
+            badgeLabel.frame = NSRect(x: 70, y: 9, width: badgeWidth, height: 16)
+            leading = 70 + badgeWidth + 7
+        }
+        let width = max(0, bounds.width - 236 - (leading - 70))
+        nameLabel.frame = NSRect(x: leading, y: 8, width: width, height: 18)
         let detailWidth = detailLabel.isHidden ? 0 : ceil(detailLabel.attributedStringValue.size().width)
-        detailLabel.frame = NSRect(x: 70, y: 27, width: detailWidth, height: 15)
-        pathLabel.frame = NSRect(x: 70 + detailWidth, y: 27, width: max(0, width - detailWidth), height: 15)
+        detailLabel.frame = NSRect(x: leading, y: 27, width: detailWidth, height: 15)
+        pathLabel.frame = NSRect(x: leading + detailWidth, y: 27, width: max(0, width - detailWidth), height: 15)
         dateLabel.frame = NSRect(x: bounds.width - 150, y: 9, width: 124, height: 16)
         sizeLabel.frame = NSRect(x: bounds.width - 150, y: 27, width: 124, height: 15)
     }
@@ -85,6 +101,8 @@ final class ResultCell: NSTableCellView {
             detailLabel.attributedStringValue = text
         }
         dateLabel.stringValue = Presentation.dateText(item.modified, now: Date(), calendar: .current, chinese: L10n.chinese)
+        badgeLabel.isHidden = true
+        badgeLabel.stringValue = ""
         sizeLabel.stringValue = item.kind == 2 ? L10n.text("meta.app") : item.flags & SiftFlag.dir != 0 && item.flags & SiftFlag.package == 0 ? L10n.text("meta.folder") : Presentation.sizeText(item.size)
         toolTip = item.path
         icon.image = icons.icon(name: item.name, path: item.path, flags: item.flags, kind: item.kind, resolveFileIcon: item.source.isOnline) { [weak self] image in
@@ -111,6 +129,16 @@ final class ResultCell: NSTableCellView {
             return value
         }
         nameLabel.attributedStringValue = highlighted(item.title, font: nameLabel.font!, color: .labelColor)
+        if let badge = item.badge, !badge.isEmpty {
+            badgeLabel.isHidden = false
+            badgeLabel.attributedStringValue = NSAttributedString(string: badge, attributes: [
+                .font: badgeLabel.font!, .foregroundColor: NSColor.controlAccentColor,
+            ])
+            badgeLabel.layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.16).cgColor
+        } else {
+            badgeLabel.isHidden = true
+            badgeLabel.stringValue = ""
+        }
         detailLabel.isHidden = true; detailLabel.stringValue = ""
         pathLabel.attributedStringValue = highlighted(item.detail, font: pathLabel.font!, color: .secondaryLabelColor)
         dateLabel.stringValue = Presentation.dateText(item.modified, now: Date(), calendar: .current, chinese: L10n.chinese)
