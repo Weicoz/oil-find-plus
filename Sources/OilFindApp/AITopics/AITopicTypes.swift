@@ -75,6 +75,8 @@ final class AITopicSQL {
             throw AITopicError.database(message)
         }
         db = handle; sqlite3_busy_timeout(db, readOnly ? 100 : 1000)
+        // 临时表（reconcile 的 seen_*）与排序留在内存：默认 FILE 会在 $TMPDIR 反复写 etilqs_* 临时文件。
+        sqlite3_exec(db, "PRAGMA temp_store=MEMORY", nil, nil, nil)
     }
     deinit { sqlite3_close(db) }
     func run(_ sql: String) throws {

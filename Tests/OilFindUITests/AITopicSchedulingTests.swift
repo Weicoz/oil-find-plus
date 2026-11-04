@@ -112,6 +112,7 @@ final class AITopicSchedulingTests: XCTestCase {
         let suite = "oilfind-debounce-" + UUID().uuidString, defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
         let manager = AITopicManager(defaults: defaults, url: root.appendingPathComponent("index.sqlite"), locations: locations, detectProviders: { [.claude] })
+        manager.backgroundDebounce = 1.5 // 测的是监听触发与防抖语义，不等后台 30 秒合并
         manager.start(); defer { manager.stop() }
         var deadline = Date().addingTimeInterval(5)
         repeat { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }

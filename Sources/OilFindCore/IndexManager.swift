@@ -1,6 +1,7 @@
 import Foundation
 import Darwin
 import CoreServices
+import os
 
 public final class IndexManager {
     public enum State { case idle, loading, scanning, ready }
@@ -23,6 +24,47 @@ public final class IndexManager {
     // 后台重建被限速到每秒 4000 项，200 万条目的重建要跑几分钟，这段时间事件只进缓冲。
     // 上限压得太低会溢出并置 bufferedRescan，重建完成又立刻排队下一轮，形成自我喂养的重扫循环。
     internal var bufferedEventByteLimit = 32 * 1024 * 1024
+    /// 缓冲前的预过滤配置（取本轮扫描所用配置）。排除目录（~/Library、/private、.git、.build…）
+    /// 占全盘事件的大半，它们在 apply 时必然被拒收，提前丢掉才不会把缓冲挤到溢出。
+    private var bufferFilterConfig: IndexConfig?
+    /// 连续以「丢事件」收尾的重建次数。第二次起恢复重建按指数退避（5 分钟起，封顶 1 小时），
+    /// 机器持续高负载时不再让「重建→丢失→重建」首尾相接地整盘遍历并整份写盘。
+    private var lossStreak = 0, recoveryNotBefore: CFAbsoluteTime = 0, recoveryDeferred = false
+    /// 扫描期间丢失信号的旗标并集与缓冲是否溢出，用来判断这次损失能否靠回放历史补齐。
+    private var bufferedLossFlags: UInt32 = 0, bufferedOverflow = false
+    /// 「回放补齐」的预算：滚动 10 分钟内最多 8 次。每次都从已应用的游标重放，突发的成串 UserDropped
+    /// 不会漏件；超出预算说明回放补不住，改走整盘重建（受上面的退避约束）。
+    private var recentReplays: [CFAbsoluteTime] = []
+    internal static let replayBudget = 8, replayWindow: CFAbsoluteTime = 600
+    /// 实时丢件后延迟重开流再回放：系统级事件风暴期间立即重开会在 0.1 秒内再次被丢，
+    /// 一秒内就烧光预算（实测 5 次回放 0.6 秒耗尽后退回整盘重建）。延迟按窗口内已回放次数翻倍，
+    /// 0.5 秒起、封顶 30 秒，8 次预算约覆盖 75 秒的风暴。停流期间 fseventsd 照常记账，回放不漏件。
+    internal static var replayDelayBase: CFAbsoluteTime = 0.5
+    internal static let replayDelayCap: CFAbsoluteTime = 30
+    private var replayPending = false
+    /// UserDropped 只表示本进程这一路客户端被丢件，fseventsd 历史日志仍完整，可回放补齐；
+    /// 内核丢失、事件 ID 回绕、根变化意味着历史本身不可信，必须整盘重建。
+    internal static func replayableLoss(_ flags: UInt32) -> Bool {
+        flags & UInt32(kFSEventStreamEventFlagUserDropped) != 0
+            && flags & UInt32(kFSEventStreamEventFlagKernelDropped | kFSEventStreamEventFlagEventIdsWrapped | kFSEventStreamEventFlagRootChanged) == 0
+    }
+    private func takeReplayBudget() -> Bool {
+        let now = CFAbsoluteTimeGetCurrent()
+        recentReplays.removeAll { now - $0 >= Self.replayWindow }
+        guard recentReplays.count < Self.replayBudget else { return false }
+        recentReplays.append(now); return true
+    }
+    private var nextReplayDelay: CFAbsoluteTime {
+        min(Self.replayDelayBase * pow(2, Double(max(0, recentReplays.count - 1))), Self.replayDelayCap)
+    }
+    /// 定时保存的节流依据：上次落盘时的写入计数与时刻。映射态下改动只产生少量写时复制页，
+    /// 不必每 30 分钟整份重写 70MB+；FSEvents 回放会补齐两次保存之间的改动。
+    private var savedMutations: UInt64 = 0, savedAt = CFAbsoluteTimeGetCurrent()
+    internal static let periodicSaveMutations: UInt64 = 50_000
+    internal static let periodicSaveMaxAge: CFAbsoluteTime = 4 * 3600
+    /// 发布版也记录整盘重建的起因与收尾：重建一次就整份写盘，只靠 DEBUG 日志无法在用户机器上定位。
+    /// 只在重建、丢事件、缓冲溢出这类低频节点写一行，不记具体路径。
+    private static let log = Logger(subsystem: "com.oiloil.find", category: "index")
     private var watcher: FSWatcher?, timer: DispatchSourceTimer?
     internal var onBeforeLoadedHashBuild: (() -> Void)?
     internal var onRescanStart: (() -> Void)?
@@ -175,7 +217,8 @@ public final class IndexManager {
                     return
                 }
                 let uuid = self.deviceUUID(config: config)
-                if let s = IndexStore.load(from: self.dbURL.path), s.configFingerprint == self.fingerprint(config),
+                let loaded = IndexStore.load(from: self.dbURL.path)
+                if let s = loaded, s.configFingerprint == self.fingerprint(config),
                    (self.volumeUUID != nil || s.rootPath == config.rootPath), self.cursorIsValid(s, config: config, uuid: uuid) {
                     let rootChanged = s.rootPath != config.rootPath
                     if self.volumeUUID != nil { s.rebase(to: config.rootPath) }
@@ -211,6 +254,11 @@ public final class IndexManager {
                     }
                 } else {
                     guard self.valid(token) else { return }
+                    let reason = loaded.map { s in
+                        s.configFingerprint != self.fingerprint(config) ? "fingerprint" :
+                        (self.volumeUUID == nil && s.rootPath != config.rootPath) ? "root" : "cursor"
+                    } ?? "missing"
+                    Self.log.notice("index load rejected: reason=\(reason, privacy: .public); full scan")
                     self.eventQueue.async { if self.valid(token) { self.setState(.scanning) } }
                     self.scan(config: config, token: token, isRescan: false, uuid: uuid)
                 }
@@ -231,6 +279,7 @@ public final class IndexManager {
         eventQueue.sync {
             guard self.valid(token) else { return }
             self.scanStartEventId = startId
+            self.bufferFilterConfig = config
             // A fresh live stream precedes every scan. Replaying the lost historical stream
             // after rebuilding can deliver the same loss again and schedule endless rebuilds.
             let epoch = self.watcherEpoch &+ 1
@@ -243,7 +292,7 @@ public final class IndexManager {
                 self.watcherEpoch = epoch
                 self.watcher?.stop(); self.watcher = nil; self.scanWatcher?.stop()
                 self.scanWatcher = monitor; self.bufferingToken = token
-                self.bufferedEvents.removeAll(keepingCapacity: true); self.bufferedEventBytes = 0; self.bufferedRescan = false
+                self.bufferedEvents.removeAll(keepingCapacity: true); self.bufferedEventBytes = 0; self.bufferedRescan = false; self.bufferedLossFlags = 0; self.bufferedOverflow = false
             }
             // Any loss delivered before this scan starts is covered by this scan. Loss on
             // the new stream while scanning is tracked separately and still queues recovery.
@@ -271,7 +320,7 @@ public final class IndexManager {
                     }
                 } else {
                     self.scanWatcher?.stop(); self.scanWatcher = nil; self.bufferingToken = nil
-                    self.bufferedEvents.removeAll(); self.bufferedEventBytes = 0; self.bufferedRescan = false; self.setState(.idle)
+                    self.bufferedEvents.removeAll(); self.bufferedEventBytes = 0; self.bufferedRescan = false; self.bufferedLossFlags = 0; self.bufferedOverflow = false; self.setState(.idle)
                 }
             }; return
         }
@@ -286,9 +335,17 @@ public final class IndexManager {
         eventQueue.async { [weak self] in
             guard let self, self.valid(token) else { return }
             self.watcher?.stop(); self.watcher = nil
-            let adopted = self.adoptScanWatcher(token: token)
             let buffered = Array(self.bufferedEvents.values)
-            let lost = self.bufferedRescan || self.recoveryRescanPending
+            // UserDropped 只表示本进程没及时取走事件，fseventsd 的历史日志仍完整：从本轮扫描起点回放
+            // 就能补齐，不必再整盘重建并整份写盘。内核丢失、ID 回绕、根变化、缓冲溢出或扫描前就有的损失
+            // 仍按原路整盘恢复；回放期间若再报丢失，handleEvents 会照常发起重建。
+            let replay = self.bufferedRescan && !self.recoveryRescanPending && !self.bufferedOverflow
+                && Self.replayableLoss(self.bufferedLossFlags) && self.takeReplayBudget()
+            if replay {
+                if self.bufferingToken == token { self.scanWatcher?.stop(); self.scanWatcher = nil; self.bufferingToken = nil }
+            }
+            let adopted = !replay && self.adoptScanWatcher(token: token)
+            let lost = !replay && (self.bufferedRescan || self.recoveryRescanPending)
             let updater = IndexUpdater(config: config)
             self.locked { self.updater = updater }
             self.onUpdaterCreated?(updater)
@@ -298,9 +355,15 @@ public final class IndexManager {
             if !lost && !buffered.isEmpty { batch = updater.apply(buffered, to: s) }
             guard self.valid(token), !updater.isCancelled else { return }
             let installed = s.read { s.needsCompaction ? s.compacted() : s }
-            self.bufferedEvents.removeAll(keepingCapacity: true); self.bufferedEventBytes = 0; self.bufferedRescan = false
+            self.bufferedEvents.removeAll(keepingCapacity: true); self.bufferedEventBytes = 0; self.bufferedRescan = false; self.bufferedLossFlags = 0; self.bufferedOverflow = false
             self.unresolvedLossCursor = lost ? startId : nil
             self.recoveryRescanPending = lost
+            if lost {
+                self.lossStreak += 1
+                let delay = self.lossStreak >= 2 ? min(300 * pow(2, Double(self.lossStreak - 2)), 3600) : 0
+                self.recoveryNotBefore = CFAbsoluteTimeGetCurrent() + delay
+            } else { self.lossStreak = 0; self.recoveryNotBefore = 0 }
+            Self.log.notice("rescan done: entries=\(installed.count) lost=\(lost) replay=\(replay) buffered=\(buffered.count) lossStreak=\(self.lossStreak) backoff=\(Int(max(0, self.recoveryNotBefore - CFAbsoluteTimeGetCurrent())))s")
             self.locked { self.currentStore = installed; self.currentScanner = nil; self.rescanning = false; self.hashMs = ms }
             if let batch {
                 let callback = self.locked { self.summary = batch; return self.batchCallback }
@@ -338,23 +401,33 @@ public final class IndexManager {
             #endif
             return
         }
+        if mustRescanAll {
+            let flags = changes.reduce(UInt32(0)) { $0 | $1.flags }
+            Self.log.notice("fsevents loss signal: events=\(changes.count) flags=\(String(flags, radix: 16), privacy: .public) buffering=\(self.bufferingToken != nil)")
+        }
         if let monitor = scanWatcher ?? watcher { locked { replayCount = monitor.replayedEventCount; dataPrefix = monitor.reportedDataPrefix } }
         if bufferingToken == token || unresolvedLossCursor != nil {
             // A root loss is not a usable subtree update. The replacement scan handles it;
             // applying it synchronously here would perform another full walk on eventQueue.
             if !mustRescanAll {
+                let filter = bufferFilterConfig ?? config
                 for change in changes {
+                    if !IndexUpdater.mayAffectIndex(change.path, config: filter) { continue }
                     if var existing = bufferedEvents[change.path] {
                         existing.flags |= change.flags; existing.eventId = max(existing.eventId, change.eventId)
                         bufferedEvents[change.path] = existing
                     } else {
                         let cost = change.path.utf8.count + 96
-                        if cost > bufferedEventByteLimit - bufferedEventBytes { bufferedRescan = true; continue }
+                        if cost > bufferedEventByteLimit - bufferedEventBytes {
+                            if !bufferedOverflow { Self.log.notice("event buffer overflow: paths=\(self.bufferedEvents.count) bytes=\(self.bufferedEventBytes)") }
+                            bufferedRescan = true; bufferedOverflow = true; continue
+                        }
                         bufferedEvents[change.path] = change; bufferedEventBytes += cost
                     }
                 }
             }
             bufferedRescan = bufferedRescan || mustRescanAll
+            if mustRescanAll { bufferedLossFlags |= changes.reduce(UInt32(0)) { $0 | $1.flags } }
             onBufferedEvents?(changes)
             #if DEBUG
             if mustRescanAll { NSLog("Oil Find buffered file recovery: events=%d min=%llu max=%llu watermark=%llu epoch=%llu", changes.count, changes.map(\.eventId).min() ?? 0, changes.map(\.eventId).max() ?? 0, scanStartEventId, epoch) }
@@ -374,6 +447,25 @@ public final class IndexManager {
             let flags = Set(changes.map { String($0.flags, radix: 16) }).sorted().joined(separator: ",")
             NSLog("Oil Find file recovery: events=%d flags=%@ pending=%d min=%llu max=%llu watermark=%llu epoch=%llu", changes.count, flags, isRescanning ? 1 : 0, changes.map(\.eventId).min() ?? 0, changes.map(\.eventId).max() ?? 0, scanStartEventId, watcherEpoch)
             #endif
+            // 已排定的回放从已应用游标重放，覆盖这次丢件，不再消耗预算。
+            if replayPending, !isRescanning { return }
+            // 实时流被丢件：先从已应用游标重放历史补齐，省掉一次整盘重建与整份写盘。
+            if !isRescanning, self.store != nil, Self.replayableLoss(changes.reduce(UInt32(0)) { $0 | $1.flags }), takeReplayBudget() {
+                let delay = nextReplayDelay, token = locked { generation }
+                Self.log.notice("live loss: replaying history from applied cursor in \(delay, format: .fixed(precision: 1))s")
+                // 停流并作废已排队的旧投递；游标不前进，回放会把它们重新送到。
+                watcher?.stop(); watcher = nil; watcherEpoch &+= 1
+                let epoch = watcherEpoch
+                replayPending = true
+                eventQueue.asyncAfter(deadline: .now() + delay) { [weak self] in
+                    guard let self else { return }
+                    self.replayPending = false
+                    guard self.valid(token), !self.isRescanning,
+                          self.watcher == nil, epoch == self.watcherEpoch, let store = self.store else { return }
+                    self.startWatcher(store, token: token)
+                }
+                return
+            }
             if unresolvedLossCursor == nil { unresolvedLossCursor = self.store.map { store in store.read { store.lastEventId } } }
             if isRescanning { recoveryRescanPending = true }
             else { beginRescan(reason: "lost-events") }
@@ -419,9 +511,7 @@ public final class IndexManager {
             rescanning = true; return generation
         }
         guard let token else { return }
-        #if DEBUG
-        NSLog("Oil Find file rescan: reason=%@", reason)
-        #endif
+        Self.log.notice("rescan begin: reason=\(reason, privacy: .public) lossStreak=\(self.lossStreak)")
         let config = self.config
         onRescanStart?()
         scanQueue.async { [weak self] in
@@ -432,6 +522,17 @@ public final class IndexManager {
     }
     private func startPendingRecovery() {
         guard recoveryRescanPending, !isRescanning else { return }
+        let wait = recoveryNotBefore - CFAbsoluteTimeGetCurrent()
+        if wait > 0 {
+            // 退避期间损失仍未解决：事件继续只进缓冲，旧索引照常服务搜索。
+            guard !recoveryDeferred else { return }
+            recoveryDeferred = true
+            eventQueue.asyncAfter(deadline: .now() + wait) { [weak self] in
+                guard let self else { return }
+                self.recoveryDeferred = false; self.startPendingRecovery()
+            }
+            return
+        }
         recoveryRescanPending = false
         beginRescan(reason: "recovery")
     }
@@ -452,18 +553,22 @@ public final class IndexManager {
         if timer != nil { return }
         let timer = DispatchSource.makeTimerSource(queue: eventQueue)
         timer.schedule(deadline: .now()+1800, repeating: 1800)
-        timer.setEventHandler { [weak self] in self?.saveQueue.async { [weak self] in self?.saveChanged() } }
+        timer.setEventHandler { [weak self] in self?.saveQueue.async { [weak self] in self?.saveChanged(periodic: true) } }
         self.timer = timer; timer.resume()
     }
     private var adoptionRetries = 0
-    private func saveChanged(force: Bool = false) {
+    private func saveChanged(force: Bool = false, periodic: Bool = false) {
         guard !locked({ offline }), let s = store else { return }
-        let version = s.read { s.version }
+        let (version, mutations, fileBacked) = s.read { (s.version, s.mutationCount, s.isFileBacked) }
         if !force, savedStore === s, savedVersion == version { return }
+        // 定时保存只在必要时整份重写：有堆段（内存要靠落盘接管归还）、改动累计较多或距上次落盘过久。
+        if periodic, savedStore === s, fileBacked, mutations &- savedMutations < Self.periodicSaveMutations,
+           CFAbsoluteTimeGetCurrent() - savedAt < Self.periodicSaveMaxAge { return }
         do {
             // The saved version is captured under the same read lock as the file snapshot.
             let saved = try s.saveSnapshot(to: dbURL.path)
             savedStore = s; savedVersion = saved.version
+            savedMutations = saved.mutations; savedAt = CFAbsoluteTimeGetCurrent()
             adoptSavedMapping(s, saved: saved.version, mutations: saved.mutations)
         } catch { fputs("Oil Find: save failed: \(error)\n", stderr) }
     }
@@ -505,10 +610,10 @@ public final class IndexManager {
                 return pending
             }
             pending.0?.cancel(); pending.1?.cancel()
-            self.recoveryRescanPending = false; self.unresolvedLossCursor = nil
+            self.recoveryRescanPending = false; self.unresolvedLossCursor = nil; self.lossStreak = 0; self.recoveryNotBefore = 0
             self.watcherEpoch &+= 1
             self.watcher?.stop(); self.watcher = nil
-            self.scanWatcher?.stop(); self.scanWatcher = nil; self.bufferingToken = nil; self.bufferedEvents.removeAll(); self.bufferedEventBytes = 0; self.bufferedRescan = false
+            self.scanWatcher?.stop(); self.scanWatcher = nil; self.bufferingToken = nil; self.bufferedEvents.removeAll(); self.bufferedEventBytes = 0; self.bufferedRescan = false; self.bufferedLossFlags = 0; self.bufferedOverflow = false
             self.timer?.cancel(); self.timer = nil; self.pendingNotification?.cancel(); self.pendingNotification = nil
             self.setState(.idle)
         }

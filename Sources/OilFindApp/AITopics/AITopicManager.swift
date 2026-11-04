@@ -37,6 +37,13 @@ final class AITopicManager: ObservableObject {
     private var timer: Timer?
     private var pending: DispatchWorkItem?
     private var running = false, started = false, visible = false
+    static let fallbackRefreshInterval: TimeInterval = 300
+    /// 面板关闭时的导入防抖。进行中的会话每隔几秒追加一次记录，每轮导入都要遍历全部会话并写库；
+    /// 1.5 秒防抖下导入几乎连轴转（实测常驻约 9% CPU 并持续写库）。面板打开会立即刷新，
+    /// 所以后台合并成每 30 秒至多一轮，不影响搜索时的新鲜度。
+    var backgroundDebounce: TimeInterval = 30
+    /// 本轮导入运行期间是否有新的来源事件；只有这种「流式写入」才在结束后走防抖。
+    private var eventsDuringRun = false
     private var lastProgress = Date.distantPast
     #if DEBUG
     private(set) var snapshot = false
@@ -135,7 +142,8 @@ final class AITopicManager: ObservableObject {
                 DispatchQueue.main.async { [weak self] in self?.requestRefresh(providers: [.workbuddy]) }
             }
         }
-        timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in self?.requestRefresh() }
+        // 兜底轮询：FSEvents 与 vnode 监听已覆盖所有来源，面板打开时也会立即刷新，不必每 30 秒全量遍历。
+        timer = Timer.scheduledTimer(withTimeInterval: Self.fallbackRefreshInterval, repeats: true) { [weak self] _ in self?.requestRefresh() }
         requestRefresh(immediate: true)
     }
     func visibilityChanged(_ value: Bool) {
@@ -160,6 +168,8 @@ final class AITopicManager: ObservableObject {
         if provider == .claude { return path == claude || path == desktop || path.hasPrefix(desktop + "/") || path == claude + "/projects" || path.hasPrefix(claude + "/projects/") }
         if path == codex { return true }
         guard path.hasPrefix(codex + "/") else { return false }
+        // SQLite 的共享内存文件只承载锁与读标记，Codex 每次读库都会改它（实测 2 分钟 125 次），不含会话内容。
+        if path.hasSuffix("-shm") { return false }
         let relative = String(path.dropFirst(codex.count + 1))
         return relative.hasPrefix("state_") || relative.hasPrefix("thread_history_") || relative.hasPrefix("sessions/") || relative.hasPrefix("archived_sessions/") || relative == "sessions" || relative == "archived_sessions"
     }
@@ -188,6 +198,7 @@ final class AITopicManager: ObservableObject {
         databaseWatcher?.rescan()
         codexDatabaseWatcher?.rescan(paths: codexDatabasePaths())
         syncQueue.enqueue((providers ?? selected).intersection(selected))
+        if running { eventsDuringRun = true }
         scheduleRefresh(immediate: immediate)
     }
     private func scheduleRefresh(immediate: Bool) {
@@ -196,14 +207,15 @@ final class AITopicManager: ObservableObject {
         if pending != nil && !immediate { return }
         pending?.cancel()
         let work = DispatchWorkItem { [weak self] in self?.refresh() }; pending = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + (immediate ? 0 : 0.25), execute: work)
+        // 面板不可见时把流式写入合并成更少的导入轮次：每轮都会写分块、FTS 段与 WAL。
+        DispatchQueue.main.asyncAfter(deadline: .now() + (immediate ? 0 : visible ? 0.25 : backgroundDebounce), execute: work)
     }
     private func refresh() {
         pending = nil
         guard !running, started, isEnabled, !locked({ suspended }) else { return }
         let (token, capturedProviders) = locked { (lifecycle, selectedProviders) }
         guard let job = syncQueue.next() else { return }
-        running = true; indexing = true; onChange?()
+        running = true; indexing = true; eventsDuringRun = false; onChange?()
         // Normal source writes enqueue another pass; only lifecycle changes cancel committed progress.
         let cancelled = { [weak self] in
             guard let self else { return true }
@@ -281,7 +293,10 @@ final class AITopicManager: ObservableObject {
                 self.indexing = !self.syncQueue.isEmpty && !self.locked({ self.suspended })
                 self.failed = !self.failedProviders.isEmpty; self.diskBytes = size; self.count = total
                 self.onChange?()
-                self.scheduleRefresh(immediate: true)
+                // 未完成的历史导入与启动时排队的来源立即续跑；本轮期间新到的事件在面板不可见时走防抖，
+                // 流式写入的会话就不会让导入首尾相接地反复写分块、FTS 段与 WAL。
+                let streaming = self.eventsDuringRun; self.eventsDuringRun = false
+                self.scheduleRefresh(immediate: interrupted || !complete || self.visible || !streaming)
             }
         }
     }

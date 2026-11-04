@@ -6,6 +6,9 @@ private final class WatchContext {
     let roots: [String]
     let deviceRoot: String?
     let handler: ([FSChange], Bool) -> Void
+    /// 处理方所在队列。回调本身跑在专用的接收队列上，只做路径整理后异步转交：处理方（索引应用、
+    /// 压实、扫描收尾）阻塞几秒时，fseventsd 的客户端队列仍被及时取空，不会判本进程过慢而 UserDropped。
+    var target: DispatchQueue?
     let lock = NSLock()
     var latest: UInt64, replayed = 0, historyDone = false, dataPrefix = false
     init(roots: [String], since: UInt64, deviceRoot: String?, handler: @escaping ([FSChange], Bool) -> Void) {
@@ -34,12 +37,15 @@ private final class WatchContext {
             changes.append(FSChange(path: path, flags: f, eventId: ids[i]))
         }
         lock.unlock()
-        handler(changes, rescan)
+        let handler = self.handler
+        if let target { target.async { handler(changes, rescan) } } else { handler(changes, rescan) }
     }
 }
 public final class FSWatcher {
     private let device: dev_t?
     private let context: WatchContext, queue: DispatchQueue, latency: TimeInterval
+    /// FSEvents 回调专用队列：高优先级、只做轻量整理，与处理队列解耦。
+    private let receiveQueue = DispatchQueue(label: "com.oiloil.find.fsevents", qos: .userInitiated)
     private let lock = NSLock()
     private var stream: FSEventStreamRef?
     public init(paths: [String], sinceWhen: UInt64, latency: TimeInterval = 0.15, device: dev_t? = nil, queue: DispatchQueue,
@@ -68,7 +74,8 @@ public final class FSWatcher {
             created = FSEventStreamCreate(nil, callback, &c, context.roots as CFArray, context.latest, latency, flags)
         }
         guard let s = created else { return false }
-        FSEventStreamSetDispatchQueue(s, queue)
+        context.target = queue
+        FSEventStreamSetDispatchQueue(s, receiveQueue)
         guard FSEventStreamStart(s) else { FSEventStreamInvalidate(s); FSEventStreamRelease(s); return false }
         stream = s; return true
     }

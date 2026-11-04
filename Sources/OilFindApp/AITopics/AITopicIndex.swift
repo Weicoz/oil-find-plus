@@ -96,6 +96,7 @@ public final class AITopicIndex {
         incremental = true
         try sql.run("""
             PRAGMA journal_mode=WAL;
+            PRAGMA synchronous=NORMAL;
             PRAGMA foreign_keys=ON;
             BEGIN IMMEDIATE;
             CREATE TABLE IF NOT EXISTS topics(

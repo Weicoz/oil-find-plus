@@ -86,6 +86,7 @@ final class AITopicTests: XCTestCase {
         let suite = "oilfind-topics-" + UUID().uuidString, defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
         let manager = AITopicManager(defaults: defaults, url: root.appendingPathComponent("index/index.sqlite"), locations: .init(home: home), detectProviders: { Set(AITopicProvider.allCases) })
+        manager.backgroundDebounce = 1.5 // 测的是监听触发与防抖语义，不等后台 30 秒合并
         manager.start(); defer { manager.onChange = nil; manager.stop() }
         XCTAssertTrue(eventually { !manager.indexing && manager.count == 0 && FileManager.default.fileExists(atPath: manager.url.path) })
         let id = UUID().uuidString, file = project.appendingPathComponent(id + ".jsonl")
@@ -134,6 +135,7 @@ final class AITopicTests: XCTestCase {
         let suite = "oilfind-archive-watch-" + UUID().uuidString, defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
         let manager = AITopicManager(defaults: defaults, url: root.appendingPathComponent("index/index.sqlite"), locations: locations, detectProviders: { Set(AITopicProvider.allCases) })
+        manager.backgroundDebounce = 1.5 // 测的是监听触发与防抖语义，不等后台 30 秒合并
         let provider = AITopicSearchProvider(manager: manager)
         manager.start(); defer { manager.stop() }
         var displayed: [AdditionalSearchItem] = []

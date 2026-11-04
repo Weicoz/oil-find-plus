@@ -53,7 +53,9 @@ final class ExternalVolumeMonitor: ExternalDriveMonitoring {
             guard let context else { return }
             Unmanaged<ExternalVolumeMonitor>.fromOpaque(context).takeUnretainedValue().onChange?()
         }, context)
-        DARegisterDiskDescriptionChangedCallback(session, nil, nil, { _, _, context in
+        // 只关心挂载点与卷名变化；其余描述键（例如空间、探测状态）会高频变化，不影响外置盘目录。
+        let watched = [kDADiskDescriptionVolumePathKey, kDADiskDescriptionVolumeNameKey] as CFArray
+        DARegisterDiskDescriptionChangedCallback(session, nil, watched, { _, _, context in
             guard let context else { return }
             Unmanaged<ExternalVolumeMonitor>.fromOpaque(context).takeUnretainedValue().onChange?()
         }, context)
@@ -95,10 +97,17 @@ final class ExternalVolumeMonitor: ExternalDriveMonitoring {
 
     static func mounted() -> [ExternalVolume] {
         guard let session = DASessionCreate(kCFAllocatorDefault) else { return [] }
-        let rolesByUUID = apfsRoles()
         let keys: Set<URLResourceKey> = [.volumeUUIDStringKey, .volumeNameKey, .volumeIsLocalKey,
                                         .volumeIsRootFileSystemKey, .volumeIsBrowsableKey, .volumeIsReadOnlyKey]
         let urls = FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: Array(keys), options: []) ?? []
+        // 只有可能入选的卷才需要 APFS 角色；没有这类卷时完全不派生 diskutil。
+        let candidates = Set(urls.compactMap { url -> String? in
+            guard let values = try? url.resourceValues(forKeys: keys), let uuid = values.volumeUUIDString,
+                  values.volumeIsLocal == true, values.volumeIsRootFileSystem != true, values.volumeIsBrowsable == true,
+                  url.path != "/", !url.path.hasPrefix("/System/Volumes/") else { return nil }
+            return uuid.uppercased()
+        })
+        let rolesByUUID = candidates.isEmpty ? [:] : roles(for: candidates)
         return urls.compactMap { url in
             guard let values = try? url.resourceValues(forKeys: keys), let uuid = values.volumeUUIDString,
                   let disk = DADiskCreateFromVolumePath(kCFAllocatorDefault, session, url as CFURL),
@@ -125,6 +134,22 @@ final class ExternalVolumeMonitor: ExternalDriveMonitoring {
                                   diskImage: bus.contains("disk image") || model.contains("disk image"),
                                   timeMachine: backup, optical: bus.contains("cd") || bus.contains("dvd") || model.contains("dvd") || model.contains("cd-rom"), roles: roles)
         }
+    }
+    private static let rolesLock = NSLock()
+    private static var rolesCache: [String: [String]] = [:]
+    /// 卷 UUID 的 APFS 角色在卷的生命周期内不变，按 UUID 缓存；只有出现未知卷时才重新查询。
+    /// 查询失败（空结果）不写缓存，下次发现会重试，避免把备份卷误判成可索引的外置盘。
+    private static func roles(for uuids: Set<String>) -> [String: [String]] {
+        rolesLock.lock(); defer { rolesLock.unlock() }
+        if !uuids.isSubset(of: Set(rolesCache.keys)) {
+            let fresh = apfsRoles()
+            if !fresh.isEmpty {
+                for (uuid, roles) in fresh { rolesCache[uuid] = roles }
+                for uuid in uuids where rolesCache[uuid] == nil { rolesCache[uuid] = [] }
+            }
+            return rolesCache.merging(fresh) { $1 }
+        }
+        return rolesCache
     }
     private static func apfsRoles() -> [String: [String]] {
         // A single metadata query supplies roles, including Time Machine's Backup role.

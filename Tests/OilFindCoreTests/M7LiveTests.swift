@@ -150,23 +150,59 @@ final class M7LiveTests: XCTestCase {
         manager.injectEvents(f.events([""], flags: UInt32(kFSEventStreamEventFlagMustScanSubDirs | kFSEventStreamEventFlagUserDropped), id: FSWatcher.currentEventId() + 1), mustRescanAll: true, watcherEpoch: manager.watcherEpochForTesting)
         _ = manager.watcherEpochForTesting
         resume.signal()
+        // UserDropped 只是本进程漏取，fseventsd 历史完整：回放扫描起点之后的历史补齐，不再整盘重建。
         XCTAssertTrue(eventually {
-            countLock.lock(); let count = starts; countLock.unlock()
-            return count == 2 && !manager.isRescanning
+            !manager.isRescanning && manager.store.map { Searcher.search(Query.parse("regex:^lost-during-scan[.]txt$"), in: $0)?.total == 1 } ?? false
         })
+        RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+        countLock.lock(); let count = starts; countLock.unlock()
+        XCTAssertEqual(count, 1, "UserDropped loss must be recovered by history replay, not another full scan")
         XCTAssertEqual(contents(try XCTUnwrap(manager.store)), contents(try f.scan()))
-        XCTAssertEqual(Searcher.search(Query.parse("regex:^lost-during-scan[.]txt$"), in: try XCTUnwrap(manager.store))?.total, 1)
     }
-    func testBoundedScanBufferQueuesRecoveryInsteadOfDroppingMutationSilently() throws {
+    func testKernelDroppedLossDuringScanStillQueuesFullRecovery() throws {
         let f = try Fixture(); try f.file("before.txt")
         let manager = IndexManager(config: f.config, dbURL: f.db, settingsDefaults: nil)
-        manager.bufferedEventByteLimit = 1
         manager.start(); defer { manager.stop() }
         XCTAssertTrue(eventually { manager.state == .ready })
         let scannedRoot = DispatchSemaphore(value: 0), resume = DispatchSemaphore(value: 0)
         defer { resume.signal() }
         let countLock = NSLock(); var starts = 0
         manager.onRescanStart = { countLock.lock(); starts += 1; countLock.unlock() }
+        manager.onScannerCreated = { scanner in
+            countLock.lock(); let current = starts; countLock.unlock()
+            if current == 1 {
+                scanner.installDirectoryCompletionHook { relative in
+                    if relative.isEmpty { scannedRoot.signal(); _ = resume.wait(timeout: .now() + 5) }
+                }
+            }
+        }
+        manager.rescan()
+        XCTAssertTrue(eventually { scannedRoot.wait(timeout: .now()) == .success })
+        try f.file("kernel-lost.txt")
+        // 内核丢失意味着 fseventsd 历史本身不完整，回放补不回来，必须整盘恢复。
+        manager.injectEvents(f.events([""], flags: UInt32(kFSEventStreamEventFlagMustScanSubDirs | kFSEventStreamEventFlagUserDropped | kFSEventStreamEventFlagKernelDropped), id: FSWatcher.currentEventId() + 1), mustRescanAll: true, watcherEpoch: manager.watcherEpochForTesting)
+        _ = manager.watcherEpochForTesting
+        resume.signal()
+        XCTAssertTrue(eventually {
+            countLock.lock(); let count = starts; countLock.unlock()
+            return count >= 2 && !manager.isRescanning
+        })
+        XCTAssertEqual(Searcher.search(Query.parse("regex:^kernel-lost[.]txt$"), in: try XCTUnwrap(manager.store))?.total, 1)
+    }
+    func testBoundedScanBufferQueuesRecoveryInsteadOfDroppingMutationSilently() throws {
+        let f = try Fixture(); try f.file("before.txt")
+        let manager = IndexManager(config: f.config, dbURL: f.db, settingsDefaults: nil)
+        manager.start(); defer { manager.stop() }
+        XCTAssertTrue(eventually { manager.state == .ready })
+        let scannedRoot = DispatchSemaphore(value: 0), resume = DispatchSemaphore(value: 0)
+        defer { resume.signal() }
+        let countLock = NSLock(); var starts = 0
+        // 上限只在本测试发起的重扫里收紧（onRescanStart 跑在事件队列上）：启动扫描若被本机真实事件
+        // 挤爆，连败计数会进入 300 秒退避，恢复重扫就排不进测试窗口。
+        manager.onRescanStart = { [weak manager] in
+            countLock.lock(); starts += 1; countLock.unlock()
+            manager?.bufferedEventByteLimit = 1
+        }
         manager.onScannerCreated = { scanner in
             countLock.lock(); let current = starts; countLock.unlock()
             if current == 1 {
@@ -203,13 +239,43 @@ final class M7LiveTests: XCTestCase {
             XCTAssertEqual(old.read { old.lastEventId }, safeCursor)
             beforeScan.signal(); _ = resume.wait(timeout: .now() + 5)
         }
-        manager.injectEvents(f.events([""], flags: UInt32(kFSEventStreamEventFlagMustScanSubDirs | kFSEventStreamEventFlagUserDropped), id: safeCursor + 1), mustRescanAll: true)
+        // 内核丢失不能回放补齐，必定排队整盘重建，才能考察重建开始前的游标。
+        manager.injectEvents(f.events([""], flags: UInt32(kFSEventStreamEventFlagMustScanSubDirs | kFSEventStreamEventFlagKernelDropped), id: safeCursor + 1), mustRescanAll: true)
         XCTAssertTrue(eventually { beforeScan.wait(timeout: .now()) == .success })
         XCTAssertEqual(old.read { old.lastEventId }, safeCursor)
         manager.saveNow(); manager.stop()
         let saved = try XCTUnwrap(IndexStore.load(from: f.db.path))
         XCTAssertEqual(saved.lastEventId, safeCursor)
         resume.signal()
+    }
+    func testLiveUserDroppedLossReplaysHistoryInsteadOfFullScan() throws {
+        let f = try Fixture(); try f.file("before.txt")
+        let manager = IndexManager(config: f.config, dbURL: f.db, settingsDefaults: nil)
+        manager.start(); defer { manager.stop() }
+        XCTAssertTrue(eventually { manager.state == .ready })
+        let countLock = NSLock(); var starts = 0
+        manager.onRescanStart = { countLock.lock(); starts += 1; countLock.unlock() }
+        let base = IndexManager.replayDelayBase; IndexManager.replayDelayBase = 0.01
+        defer { IndexManager.replayDelayBase = base }
+        let epoch = manager.watcherEpochForTesting
+        try f.file("after-drop.txt")
+        // 实时流被丢件：从已应用游标重放 fseventsd 历史，真实的创建事件经回放进入索引。
+        manager.injectEvents(f.events([""], flags: UInt32(kFSEventStreamEventFlagMustScanSubDirs | kFSEventStreamEventFlagUserDropped), id: FSWatcher.currentEventId() + 1), mustRescanAll: true, watcherEpoch: epoch)
+        XCTAssertTrue(eventually { manager.store.map { Searcher.search(Query.parse("regex:^after-drop[.]txt$"), in: $0)?.total == 1 } ?? false })
+        XCTAssertGreaterThan(manager.watcherEpochForTesting, epoch, "Replay must restart the stream from the applied cursor")
+        // 排定回放前的成串丢件只算一次，不消耗预算。
+        let loss = { manager.injectEvents(f.events([""], flags: UInt32(kFSEventStreamEventFlagMustScanSubDirs | kFSEventStreamEventFlagUserDropped), id: FSWatcher.currentEventId() + 1), mustRescanAll: true) }
+        // 预算耗尽后回到整盘重建，防止回放补不住时无限回放。每次等流重开后再丢件，才会消耗下一次预算。
+        for _ in 1..<IndexManager.replayBudget {
+            let before = manager.watcherEpochForTesting
+            loss(); loss()
+            XCTAssertTrue(eventually { manager.watcherEpochForTesting >= before + 2 }, "Each replay stops then restarts the stream")
+            countLock.lock(); XCTAssertEqual(starts, 0, "Within budget a user drop must not rescan"); countLock.unlock()
+        }
+        loss()
+        XCTAssertTrue(eventually { countLock.lock(); defer { countLock.unlock() }; return starts >= 1 })
+        XCTAssertTrue(eventually { !manager.isRescanning })
+        XCTAssertEqual(contents(try XCTUnwrap(manager.store)), contents(try f.scan()))
     }
     func testPendingRecoverySchedulingGapCannotAdvancePersistedReplacementCursor() throws {
         let f = try Fixture(); try f.file("before.txt")
@@ -241,7 +307,8 @@ final class M7LiveTests: XCTestCase {
         }
         manager.rescan()
         XCTAssertTrue(eventually { firstRead.wait(timeout: .now()) == .success })
-        manager.injectEvents(f.events([""], flags: UInt32(kFSEventStreamEventFlagMustScanSubDirs | kFSEventStreamEventFlagUserDropped), id: FSWatcher.currentEventId() + 1), mustRescanAll: true)
+        // 内核丢失不能靠回放补齐，必定排队整盘恢复，才能考察恢复前的保存游标。
+        manager.injectEvents(f.events([""], flags: UInt32(kFSEventStreamEventFlagMustScanSubDirs | kFSEventStreamEventFlagKernelDropped), id: FSWatcher.currentEventId() + 1), mustRescanAll: true)
         _ = manager.watcherEpochForTesting; resumeFirst.signal()
         XCTAssertTrue(eventually { beforeRecovery.wait(timeout: .now()) == .success })
         countLock.lock(); let expected = safeCursor; countLock.unlock()

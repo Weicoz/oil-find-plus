@@ -38,7 +38,10 @@ struct ExternalDrivePersistence {
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
                                                      attributes: [.posixPermissions: 0o700])
-            try JSONEncoder().encode(preferences).write(to: metadataURL, options: .atomic)
+            let data = try JSONEncoder().encode(preferences)
+            // 每次卷发现都会调用保存；内容未变时不重写，省掉原子写的临时文件与重命名。
+            if (try? Data(contentsOf: metadataURL)) == data { return }
+            try data.write(to: metadataURL, options: .atomic)
         } catch { }
     }
     func remove(_ uuid: String) { try? FileManager.default.removeItem(at: indexURL(uuid)) }
@@ -116,7 +119,7 @@ final class ExternalDriveCatalog: ObservableObject, ExternalDriveCatalogReading 
         if let initialPreferences {
             preferences = initialPreferences; enabled = initialPreferences.enabled; ready = true
         }
-        monitor.onChange = { [weak self] in DispatchQueue.main.async { self?.discoverVolumes() } }
+        monitor.onChange = { [weak self] in DispatchQueue.main.async { self?.scheduleDiscovery() } }
         monitor.beforeEject = { [weak self] device in self?.prepareToEject(device: device) }
         monitor.beforeUnmount = { [weak self] uuid in self?.prepareToUnmount(uuid: uuid) }
     }
@@ -225,6 +228,14 @@ final class ExternalDriveCatalog: ObservableObject, ExternalDriveCatalogReading 
         if snapshot { return }
         #endif
         persistence.remove(uuid)
+    }
+    /// 磁盘事件常成串到达（Time Machine 本地快照挂载、APFS 容器探测），合并成一次发现。
+    private var discoveryDebounce: DispatchWorkItem?
+    private func scheduleDiscovery() {
+        guard discoveryDebounce == nil else { return }
+        let work = DispatchWorkItem { [weak self] in self?.discoveryDebounce = nil; self?.discoverVolumes() }
+        discoveryDebounce = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: work)
     }
     func discoverVolumes() {
         guard usable else { return }

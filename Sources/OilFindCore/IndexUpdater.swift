@@ -93,6 +93,20 @@ public final class IndexUpdater {
         _ = Pinyin.shared
     }
     private func allowed(_ bytes: UnsafeBufferPointer<UInt8>, isDirectory: Bool = true) -> Bool {
+        Self.allowed(bytes, config: config, isDirectory: isDirectory)
+    }
+    /// 扫描期间缓冲事件的预过滤：只在 apply 必然拒收时返回 false（与 apply 同样规范化路径，
+    /// 并且按目录、按文件两种解释都被排除），其余一律保留，语义与直接 apply 一致。
+    public static func mayAffectIndex(_ rawPath: String, config: IndexConfig) -> Bool {
+        var path = rawPath
+        if config.rootPath == "/" && (path == "/System/Volumes/Data" || path.hasPrefix("/System/Volumes/Data/")) {
+            path.removeFirst("/System/Volumes/Data".count); if path.isEmpty { path = "/" }
+        }
+        while path.count > 1 && path.last == "/" { path.removeLast() }
+        if path.utf8.contains(where: { $0 >= 128 }) { path = path.precomposedStringWithCanonicalMapping }
+        return Array(path.utf8).withUnsafeBufferPointer { allowed($0, config: config) || allowed($0, config: config, isDirectory: false) }
+    }
+    private static func allowed(_ bytes: UnsafeBufferPointer<UInt8>, config: IndexConfig, isDirectory: Bool = true) -> Bool {
         let root = config.rootPath.utf8
         if bytes.count < root.count || !bytes.prefix(root.count).elementsEqual(root) { return false }
         if config.rootPath != "/" && bytes.count > root.count && bytes[root.count] != 47 { return false }
