@@ -182,6 +182,7 @@ final class WorkBuddyTopicTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName:suite) }
         let manager = AITopicManager(defaults:defaults,url:root.appendingPathComponent("index/index.sqlite"),locations:.init(home:home), detectProviders: { Set(AITopicProvider.allCases) })
         for provider in AITopicProvider.allCases where provider != .workbuddy { manager.setProviderEnabled(provider,enabled:false) }
+        manager.backgroundDebounce = 1.5 // 测的是监听触发与防抖语义，不等后台 30 秒合并
         func eventually(_ body: () -> Bool) -> Bool {
             let deadline = Date().addingTimeInterval(5)
             while !body() && Date() < deadline { RunLoop.main.run(until:Date().addingTimeInterval(0.01)) }; return body()
