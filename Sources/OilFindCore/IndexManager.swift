@@ -557,8 +557,38 @@ public final class IndexManager {
         self.timer = timer; timer.resume()
     }
     private var adoptionRetries = 0
+    /// fseventsd 清空日志换新 UUID 后（本机实测一天 7 次），实时流照常投递，落盘游标却仍挂在旧 UUID 上，
+    /// 下次启动只能整盘重建。首次看到新 UUID 时记下当时的全局事件 ID：新日志从清空那一刻开始，
+    /// 不晚于这个 ID。已应用游标越过它，此后的事件就都在新日志里，保存时改记新 UUID，重启即可回放。
+    /// 只用于启动盘：外置卷的按设备事件 ID 会滞后，拿它当界限不安全。只在 saveQueue 上读写。
+    private var observedUUID: (uuid: String, eventId: UInt64)?
+    /// 测试注入点：按索引根取 fseventsd 当前 UUID，以及全局当前事件 ID。
+    internal var currentFSEventsUUID: (String) -> String? = { root in
+        var st = stat(); guard stat(root == "/" ? "/System/Volumes/Data" : root, &st) == 0 else { return nil }
+        return FSWatcher.uuid(forDevice: st.st_dev)
+    }
+    internal var currentGlobalEventId: () -> UInt64 = { FSWatcher.currentEventId() }
+    /// 新 UUID 只改内存里的 store，不为此单独整份落盘：随下一次本来就要做的保存（定时、退出）写入。
+    /// - Returns: 是否改记了新 UUID。
+    @discardableResult private func adoptRotatedFSEventsUUID(_ s: IndexStore) -> Bool {
+        guard volumeUUID == nil, !locked({ rescanning }) else { return false }
+        let (root, stored, cursor) = s.read { (s.rootPath, s.fsEventsUUID, s.lastEventId) }
+        guard !stored.isEmpty, let current = currentFSEventsUUID(root), !current.isEmpty else { return false }
+        guard stored != current else { observedUUID = nil; return false }
+        guard let observed = observedUUID, observed.uuid == current else {
+            observedUUID = (current, currentGlobalEventId())
+            Self.log.notice("fsevents uuid rotated; adopt after cursor passes \(self.observedUUID!.eventId)")
+            return false
+        }
+        guard cursor >= observed.eventId else { return false }
+        s.write { if s.fsEventsUUID == stored && s.lastEventId >= observed.eventId { s.fsEventsUUID = current } }
+        observedUUID = nil
+        Self.log.notice("fsevents uuid adopted at cursor \(cursor)")
+        return true
+    }
     private func saveChanged(force: Bool = false, periodic: Bool = false) {
         guard !locked({ offline }), let s = store else { return }
+        adoptRotatedFSEventsUUID(s)
         let (version, mutations, fileBacked) = s.read { (s.version, s.mutationCount, s.isFileBacked) }
         if !force, savedStore === s, savedVersion == version { return }
         // 定时保存只在必要时整份重写：有堆段（内存要靠落盘接管归还）、改动累计较多或距上次落盘过久。

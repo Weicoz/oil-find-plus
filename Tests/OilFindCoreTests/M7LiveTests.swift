@@ -248,6 +248,34 @@ final class M7LiveTests: XCTestCase {
         XCTAssertEqual(saved.lastEventId, safeCursor)
         resume.signal()
     }
+    func testRotatedFSEventsUUIDIsAdoptedOnlyAfterCursorPassesObservation() throws {
+        let f = try Fixture(); try f.file("before.txt")
+        let manager = IndexManager(config: f.config, dbURL: f.db, settingsDefaults: nil)
+        // fseventsd 清空日志换了 UUID：观察点设在远超当前游标处，模拟「新日志的起点不晚于此」。
+        let boundary = FSWatcher.currentEventId() + 1_000_000
+        manager.currentFSEventsUUID = { _ in "ROTATED-UUID" }
+        manager.currentGlobalEventId = { boundary }
+        manager.start(); defer { manager.stop() }
+        XCTAssertTrue(eventually { manager.state == .ready })
+        // 首次建库的落盘在 saveQueue 上异步进行，负载高时 ready 早于文件写好。
+        manager.saveNow()
+        let original = try XCTUnwrap(IndexStore.load(from: f.db.path)).fsEventsUUID
+        XCTAssertNotEqual(original, "ROTATED-UUID")
+        // 游标还没越过观察点：此前的事件可能不在新日志里，不得改记。真实写入走真实事件 ID。
+        try f.file("early.txt")
+        XCTAssertTrue(eventually { manager.store.map { Searcher.search(Query.parse("regex:^early[.]txt$"), in: $0)?.total == 1 } ?? false })
+        manager.saveNow()
+        XCTAssertEqual(try XCTUnwrap(IndexStore.load(from: f.db.path)).fsEventsUUID, original)
+        // 等真实事件落定，再注入越过观察点的事件；之后不再写文件，免得真实的小 ID 把游标拉回去。
+        RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+        manager.injectEvents(f.events(["early.txt"], id: boundary + 5), mustRescanAll: false)
+        XCTAssertTrue(eventually { manager.store.map { s in s.read { s.lastEventId } >= boundary } ?? false })
+        // 游标越过观察点后，下一次保存改记新 UUID，重启即可从新日志回放。
+        manager.saveNow()
+        let saved = try XCTUnwrap(IndexStore.load(from: f.db.path))
+        XCTAssertEqual(saved.fsEventsUUID, "ROTATED-UUID")
+        XCTAssertGreaterThanOrEqual(saved.lastEventId, boundary)
+    }
     func testLiveUserDroppedLossReplaysHistoryInsteadOfFullScan() throws {
         let f = try Fixture(); try f.file("before.txt")
         let manager = IndexManager(config: f.config, dbURL: f.db, settingsDefaults: nil)
