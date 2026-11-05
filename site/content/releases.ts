@@ -9,6 +9,24 @@ export const changelogTitle = { zh: '更新日志', en: 'Changelog' };
 // The single source for the website and the packaged update manifest.
 export const releases: Release[] = [
   {
+    "version": "1.7.2-plus",
+    "date": "2026-11-05",
+    "notes": {
+      "zh": [
+        "修复索引在后台持续写盘：只在扫描完成和定时保存时写入，空闲时不再产生磁盘写入。",
+        "系统丢失文件事件后先回放历史，不再整盘重建；系统更换事件日志标识后重启，也不再整盘重建。",
+        "AI 话题的后台同步 CPU 占用从约 10% 降到 2–3%，数据库锁文件的变化不再触发同步。",
+        "AI 话题新增 Herdr 与 DeepSeek-Harness 来源，并可从结果直接跳转到运行中的 Herdr 窗格。"
+      ],
+      "en": [
+        "Fixed constant background disk writes: the index is written only when a scan finishes or on the periodic save, and nothing is written while idle.",
+        "After the system drops file events, the index now replays history instead of rebuilding the whole disk, and a restart after the system changes its event-log identity no longer triggers a full rebuild.",
+        "Background sync for AI topics dropped from about 10% to 2–3% CPU, and changes to database lock files no longer trigger a sync.",
+        "AI topics now include Herdr and DeepSeek-Harness sources, and a result can jump straight to the running Herdr pane."
+      ]
+    }
+  },
+  {
     "version": "1.7.1-plus",
     "date": "2026-10-21",
     "notes": {

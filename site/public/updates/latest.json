@@ -1,27 +1,23 @@
 {
-  "version": "1.7.1-plus",
-  "build": 16,
-  "url": "https://github.com/Weicoz/oil-find-plus/releases/download/v1.7.1-plus/OilFind-Plus-v1.7.1-plus-macOS-arm64.zip",
-  "size": 2046904,
-  "sha256": "c0e8eaa3f739a5d85c21715692f65482ba28b479ed8f8f5e50b120739bf7e922",
+  "version": "1.7.2-plus",
+  "build": 17,
+  "url": "https://github.com/Weicoz/oil-find-plus/releases/download/v1.7.2-plus/OilFind-Plus-v1.7.2-plus-macOS-arm64.zip",
+  "size": 2141096,
+  "sha256": "8c933a1954b023ad704f0edc4f4108fd6a925c2028a53f58d1a1380a1e021bb2",
   "minimumSystemVersion": "14.0",
-  "published": "2026-10-21",
+  "published": "2026-11-05",
   "notes": {
     "zh": [
-      "安装包内置全部功能，无需授权码；图片识别与文档内容检索都在本机完成。",
-      "新增本地 AI 会话检索，支持 Claude Code、Codex 与 WorkBuddy，会话标题和正文都能搜到。",
-      "索引改为文件映射持有并归还堆段：索引常驻内存从 135.8 MiB 降到 1.80 MiB，应用空闲占用从 364 MB 降到 76 MB。",
-      "全盘重建改为单线程限速，重建峰值内存下降 56%（163 MB 降到 75 MB），后台重建不再抢 CPU。",
-      "冷启动直接复用索引内已落盘的哈希表，载入只需 0.15–0.26 秒，不再每次重建。",
-      "更新检查支持多个下载源自动切换，检查失败后一小时重试；更新源为本仓库的 GitHub Releases。"
+      "修复索引在后台持续写盘：只在扫描完成和定时保存时写入，空闲时不再产生磁盘写入。",
+      "系统丢失文件事件后先回放历史，不再整盘重建；系统更换事件日志标识后重启，也不再整盘重建。",
+      "AI 话题的后台同步 CPU 占用从约 10% 降到 2–3%，数据库锁文件的变化不再触发同步。",
+      "AI 话题新增 Herdr 与 DeepSeek-Harness 来源，并可从结果直接跳转到运行中的 Herdr 窗格。"
     ],
     "en": [
-      "Every feature ships inside the installer with no licence key; image recognition and document content search run entirely on this Mac.",
-      "Added local AI conversation search for Claude Code, Codex and WorkBuddy, covering both titles and message bodies.",
-      "The index is now held as a file mapping and returns its heap sections: resident index memory dropped from 135.8 MiB to 1.80 MiB and idle app memory from 364 MB to 76 MB.",
-      "Full rebuilds run single-threaded with a rate limit, cutting the rebuild peak by 56% (163 MB to 75 MB) so background rebuilds no longer saturate the CPU.",
-      "Cold starts reuse the hash table stored inside the index file and load in 0.15–0.26 seconds instead of rebuilding it.",
-      "Update checks now switch between several download sources automatically and retry an hour after a failure. Updates come from this repository's GitHub Releases."
+      "Fixed constant background disk writes: the index is written only when a scan finishes or on the periodic save, and nothing is written while idle.",
+      "After the system drops file events, the index now replays history instead of rebuilding the whole disk, and a restart after the system changes its event-log identity no longer triggers a full rebuild.",
+      "Background sync for AI topics dropped from about 10% to 2–3% CPU, and changes to database lock files no longer trigger a sync.",
+      "AI topics now include Herdr and DeepSeek-Harness sources, and a result can jump straight to the running Herdr pane."
     ]
   }
 }
