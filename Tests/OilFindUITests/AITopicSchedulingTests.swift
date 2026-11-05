@@ -13,6 +13,7 @@ final class AITopicSchedulingTests: XCTestCase {
         XCTAssertEqual(codex?.history, .codex)
         XCTAssertEqual(codex?.metadata, [.claude])
         XCTAssertEqual(queue.next()?.history, .workbuddy)
+        XCTAssertEqual(queue.next()?.history, .dsh)
         XCTAssertEqual(queue.next()?.history, .claude)
         XCTAssertTrue(queue.isEmpty)
     }

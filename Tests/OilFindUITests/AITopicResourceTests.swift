@@ -4,7 +4,8 @@ import XCTest
 
 final class AITopicResourceTests: XCTestCase {
     func testEveryProviderHasABundledIcon() {
-        for provider in AITopicProvider.allCases {
+        // dsh 没有可随包分发的图标，运行时取已安装应用的图标，缺失时回落到系统符号。
+        for provider in AITopicProvider.allCases where provider != .dsh {
             XCTAssertNotNil(AITopicIcons.bundledImage(provider), provider.rawValue)
         }
     }
