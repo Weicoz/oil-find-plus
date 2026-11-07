@@ -1,0 +1,29 @@
+main:
+  push:
+    - docker:
+        image: node:22
+      stages:
+        - name: 启用 pnpm
+          script: "corepack enable && corepack prepare pnpm@11.25.0 --activate"
+        - name: 安装官网依赖
+          script: "cd site && pnpm install --frozen-lockfile"
+        - name: 官网测试
+          script: "cd site && pnpm test"
+        - name: 官网类型检查
+          script: "cd site && pnpm typecheck"
+        - name: 构建官网
+          script: "cd site && pnpm build"
+  pull_request:
+    - docker:
+        image: node:22
+      stages:
+        - name: 启用 pnpm
+          script: "corepack enable && corepack prepare pnpm@11.25.0 --activate"
+        - name: 安装官网依赖
+          script: "cd site && pnpm install --frozen-lockfile"
+        - name: 官网测试
+          script: "cd site && pnpm test"
+        - name: 官网类型检查
+          script: "cd site && pnpm typecheck"
+        - name: 构建官网
+          script: "cd site && pnpm build"
